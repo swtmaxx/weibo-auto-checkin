@@ -150,7 +150,36 @@
           <label class="check-row"><input id="notify-risk" type="checkbox"><span>403/429 风控</span></label>
         </div>
       </section>
+
+      <section class="panel settings-panel password-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">ADMIN ACCESS</p>
+            <h2>管理员密码</h2>
+          </div>
+          <span class="badge badge-neutral">重新登录</span>
+        </div>
+        <div class="stack">
+          <label>
+            当前密码
+            <input id="current-password" type="password" autocomplete="current-password" minlength="1" required form="password-form">
+          </label>
+          <label>
+            新密码
+            <input id="new-password" type="password" autocomplete="new-password" minlength="12" required form="password-form">
+            <small>至少 12 位</small>
+          </label>
+          <label>
+            确认新密码
+            <input id="confirm-password" type="password" autocomplete="new-password" minlength="12" required form="password-form">
+          </label>
+          <div class="inline-actions settings-actions">
+            <button id="change-password-button" class="button button-secondary" type="submit" form="password-form">修改密码</button>
+          </div>
+        </div>
+      </section>
     </form>
+    <form id="password-form" class="visually-hidden" aria-hidden="true"></form>
   </main>
   <script src="/static/app.js"></script>
 </body>

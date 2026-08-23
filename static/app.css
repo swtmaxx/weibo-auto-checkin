@@ -428,6 +428,34 @@ select:focus {
   min-width: 0;
 }
 
+.password-panel {
+  grid-column: span 3;
+}
+
+.password-panel .stack {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: end;
+}
+
+.password-panel .inline-actions {
+  min-height: 62px;
+  align-items: flex-end;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -784,6 +812,18 @@ tbody tr:last-child td {
 
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .password-panel {
+    grid-column: auto;
+  }
+
+  .password-panel .stack {
+    grid-template-columns: 1fr;
+  }
+
+  .password-panel .inline-actions {
+    min-height: auto;
   }
 
   .auth-panel {

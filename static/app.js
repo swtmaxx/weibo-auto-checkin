@@ -479,6 +479,34 @@
   function bindSettings() {
     const form = $("#settings-form");
     if (!form) return;
+    const passwordForm = $("#password-form");
+    passwordForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = $("#change-password-button");
+      const currentPassword = $("#current-password").value;
+      const newPassword = $("#new-password").value;
+      const confirmPassword = $("#confirm-password").value;
+      if (newPassword !== confirmPassword) {
+        showToast("两次输入的新密码不一致", true);
+        return;
+      }
+      button.disabled = true;
+      try {
+        await request("/api/auth/password", {
+          method: "POST",
+          body: {
+            current_password: currentPassword,
+            new_password: newPassword,
+            confirm_password: confirmPassword
+          }
+        });
+        window.location.href = "/";
+      } catch (err) {
+        showToast(err.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const button = $("#save-settings-button");

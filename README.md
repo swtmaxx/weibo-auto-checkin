@@ -5,6 +5,7 @@
 ## 功能
 
 - 首次访问设置管理员密码，后续使用密码登录 WebUI
+- 设置页支持验证当前密码后修改管理员密码，修改成功需要重新登录
 - 直接导入 Cookie 请求头，服务器只保存 Fernet 加密后的 Cookie
 - 使用 m.weibo.cn/api/config 验证登录状态
 - 从 m.weibo.cn/api/container/getIndex 分页同步关注的超话

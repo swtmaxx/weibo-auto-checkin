@@ -32,6 +32,12 @@ class PasswordPayload(BaseModel):
     password: str = Field(min_length=12, max_length=256)
 
 
+class ChangePasswordPayload(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+    confirm_password: str = Field(min_length=12, max_length=256)
+
+
 class CookiePayload(BaseModel):
     cookie: str = Field(min_length=1, max_length=16384)
 
@@ -238,6 +244,19 @@ def create_app(
     async def logout(request: Request):
         request.session.clear()
         return {"ok": True}
+
+    @app.post("/api/auth/password", dependencies=[Depends(require_csrf)])
+    async def change_password(payload: ChangePasswordPayload, request: Request):
+        password_hash = app_db.get_config("admin_password_hash")
+        if not password_hash or not verify_password(password_hash, payload.current_password):
+            raise HTTPException(status_code=400, detail="当前密码错误")
+        if payload.new_password != payload.confirm_password:
+            raise HTTPException(status_code=400, detail="两次输入的新密码不一致")
+        if payload.new_password == payload.current_password:
+            raise HTTPException(status_code=400, detail="新密码不能与当前密码相同")
+        app_db.set_admin_password(hash_password(payload.new_password))
+        request.session.clear()
+        return {"ok": True, "reauthenticate": True}
 
     @app.get("/api/account", dependencies=[Depends(require_auth)])
     async def account_status():
