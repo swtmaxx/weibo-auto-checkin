@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>微博超话签到 · 设置</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="dashboard-page settings-page">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark small">W</div>
+        <div>
+          <strong>微博超话签到</strong>
+          <span>自托管控制台</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="button button-ghost" href="/">工作台</a>
+        <span id="clock" class="muted"></span>
+        <button id="logout-button" class="button button-ghost" type="button">退出</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="toast" class="toast" role="status"></div>
+    <section class="page-heading">
+      <div>
+        <p class="eyebrow">CONFIGURATION</p>
+        <h1>运行设置</h1>
+        <p class="muted heading-note">修改后的配置从下一次任务开始生效。</p>
+      </div>
+      <div class="heading-actions">
+        <button id="reset-settings-button" class="button button-ghost" type="button">恢复默认</button>
+        <button id="save-settings-button" class="button button-primary" type="submit" form="settings-form">保存设置</button>
+      </div>
+    </section>
+
+    <form id="settings-form" class="settings-grid">
+      <section class="panel settings-panel span-2">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">CHECK-IN POLICY</p>
+            <h2>签到与请求</h2>
+          </div>
+          <span id="cooldown-badge" class="badge badge-green">未冷却</span>
+        </div>
+        <div class="field-grid">
+          <label>
+            签到间隔（秒）
+            <input id="checkin-delay" name="checkin_delay_seconds" type="number" min="3" max="60" step="0.5" required>
+            <small>每次签到请求之间的等待时间</small>
+          </label>
+          <label>
+            单次超话上限
+            <input id="max-topics" name="max_topics_per_run" type="number" min="0" max="10000" step="1" required>
+            <small>填 0 表示不限制</small>
+          </label>
+          <label>
+            连续失败阈值
+            <input id="max-failures" name="max_consecutive_failures" type="number" min="0" max="100" step="1" required>
+            <small>填 0 表示不因连续失败停止</small>
+          </label>
+          <label>
+            请求超时（秒）
+            <input id="request-timeout" name="request_timeout_seconds" type="number" min="5" max="60" step="1" required>
+            <small>单次微博请求的最长等待时间</small>
+          </label>
+          <label>
+            读取接口重试次数
+            <select id="read-retries" name="read_retry_count">
+              <option value="0">不重试</option>
+              <option value="1">1 次</option>
+              <option value="2">2 次</option>
+            </select>
+            <small>仅用于读取接口，签到请求不会自动重试</small>
+          </label>
+        </div>
+        <label class="toggle-row setting-toggle">
+          <span>
+            <strong>遇到 403/429 自动冷却</strong>
+            <small>触发后暂停签到至次日零点</small>
+          </span>
+          <input id="cooldown-enabled" type="checkbox">
+        </label>
+        <div id="cooldown-detail" class="notice notice-neutral">当前没有冷却。</div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">QQ BOT</p>
+            <h2>私聊通知</h2>
+          </div>
+          <span id="notification-badge" class="badge badge-neutral">未配置</span>
+        </div>
+        <div class="stack">
+          <label class="toggle-row setting-toggle">
+            <span>
+              <strong>启用 QQ 通知</strong>
+              <small>发送任务汇总，不包含 Cookie</small>
+            </span>
+            <input id="notifications-enabled" type="checkbox">
+          </label>
+          <label>
+            AppID
+            <input id="qq-app-id" type="text" maxlength="128" autocomplete="off">
+          </label>
+          <label>
+            user_openid
+            <input id="qq-user-openid" type="text" maxlength="256" autocomplete="off">
+          </label>
+          <label>
+            ClientSecret
+            <input id="qq-client-secret" type="password" maxlength="512" autocomplete="new-password" placeholder="已配置时留空即可保留">
+          </label>
+          <div class="discovery-row">
+            <button id="discover-openid-button" class="button button-secondary" type="button">开始发现 OpenID</button>
+            <small>保存 AppID 和密钥后，给机器人发一条私聊，页面会自动填入 OpenID。</small>
+          </div>
+          <label class="check-row">
+            <input id="clear-client-secret" type="checkbox">
+            <span>清除已保存的 ClientSecret</span>
+          </label>
+          <label class="toggle-row setting-toggle">
+            <span>
+              <strong>发现后持续监听</strong>
+              <small>持续接收 C2C 私聊事件，不保存消息正文</small>
+            </span>
+            <input id="listen-events" type="checkbox">
+          </label>
+          <div id="qq-listener-status" class="notice notice-neutral">监听未启用。</div>
+          <div class="notice notice-neutral">请先在 QQ 开放平台开通 C2C/PUBLIC_MESSAGES 权限，再给机器人发送一条私聊消息。</div>
+          <div>
+            <div class="subsection-label">最近发现的 user_openid</div>
+            <div id="qq-openid-list" class="openid-list">
+              <div class="muted">尚未发现 OpenID。</div>
+            </div>
+          </div>
+          <div class="inline-actions settings-actions">
+            <button id="test-notification-button" class="button button-secondary" type="button">发送测试通知</button>
+          </div>
+        </div>
+        <div class="notification-events">
+          <span class="muted">通知事件</span>
+          <label class="check-row"><input id="notify-completed" type="checkbox"><span>任务完成</span></label>
+          <label class="check-row"><input id="notify-failed" type="checkbox"><span>任务失败</span></label>
+          <label class="check-row"><input id="notify-risk" type="checkbox"><span>403/429 风控</span></label>
+        </div>
+      </section>
+    </form>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

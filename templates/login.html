@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>微博超话签到 · 登录</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-panel">
+      <div class="brand-mark">W</div>
+      <p class="eyebrow">WEIBO CHECK-IN</p>
+      <h1>登录管理面板</h1>
+      <form id="login-form" class="stack">
+        <label>
+          管理员密码
+          <input id="login-password" type="password" autocomplete="current-password" required>
+        </label>
+        <button class="button button-primary" type="submit">登录</button>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

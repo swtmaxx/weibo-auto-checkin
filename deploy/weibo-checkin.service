@@ -1,0 +1,25 @@
+[Unit]
+Description=Weibo Super Topic Check-in WebUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weibo-checkin
+Group=weibo-checkin
+WorkingDirectory=/opt/weibo-checkin-web
+EnvironmentFile=-/etc/weibo-checkin.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/weibo-checkin-web/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/weibo-checkin-web/data
+
+[Install]
+WantedBy=multi-user.target
+

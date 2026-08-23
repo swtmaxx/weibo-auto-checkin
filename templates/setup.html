@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>微博超话签到 · 初始化</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-panel">
+      <div class="brand-mark">W</div>
+      <p class="eyebrow">WEIBO CHECK-IN</p>
+      <h1>初始化管理面板</h1>
+      <p class="muted">设置一个至少 12 位的管理员密码。</p>
+      <form id="setup-form" class="stack">
+        <label>
+          管理员密码
+          <input id="setup-password" type="password" autocomplete="new-password" minlength="12" required>
+        </label>
+        <label>
+          再次输入
+          <input id="setup-confirm" type="password" autocomplete="new-password" minlength="12" required>
+        </label>
+        <button class="button button-primary" type="submit">创建并进入面板</button>
+        <p id="setup-error" class="form-error" role="alert"></p>
+      </form>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

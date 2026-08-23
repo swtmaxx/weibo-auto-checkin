@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>微博超话签到</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="dashboard-page">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark small">W</div>
+        <div>
+          <strong>微博超话签到</strong>
+          <span>自托管控制台</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="button button-ghost" href="/settings">设置</a>
+        <span id="clock" class="muted"></span>
+        <button id="logout-button" class="button button-ghost" type="button">退出</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="content">
+    <div id="toast" class="toast" role="status"></div>
+    <section class="page-heading">
+      <div>
+        <p class="eyebrow">CONTROL CENTER</p>
+        <h1>签到工作台</h1>
+      </div>
+      <div class="heading-actions">
+        <button id="sync-button" class="button button-secondary" type="button">同步超话</button>
+        <button id="checkin-button" class="button button-primary" type="button">立即签到</button>
+      </div>
+    </section>
+
+    <section class="status-grid">
+      <article class="metric">
+        <span class="metric-label">账号状态</span>
+        <strong id="account-state" class="metric-value">读取中</strong>
+        <span id="account-detail" class="metric-detail"></span>
+      </article>
+      <article class="metric">
+        <span class="metric-label">已发现超话</span>
+        <strong id="topic-count" class="metric-value">0</strong>
+        <span class="metric-detail">本地列表</span>
+      </article>
+      <article class="metric">
+        <span class="metric-label">当前任务</span>
+        <strong id="task-state" class="metric-value">空闲</strong>
+        <span id="task-detail" class="metric-detail"></span>
+      </article>
+      <article class="metric">
+        <span class="metric-label">每日计划</span>
+        <strong id="schedule-state" class="metric-value">未启用</strong>
+        <span id="schedule-detail" class="metric-detail"></span>
+      </article>
+    </section>
+
+    <div class="layout-grid">
+      <section class="panel span-2">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">ACCOUNT</p>
+            <h2>微博账号</h2>
+          </div>
+          <span id="account-badge" class="badge badge-neutral">未配置</span>
+        </div>
+        <div class="account-row">
+          <div>
+            <div id="account-name" class="account-name">尚未导入 Cookie</div>
+            <div id="account-message" class="muted">Cookie 只会以加密形式保存在服务器。</div>
+          </div>
+          <div class="inline-actions">
+            <button id="verify-button" class="button button-secondary" type="button">验证 Cookie</button>
+            <button id="clear-cookie-button" class="button button-danger-ghost" type="button">清除 Cookie</button>
+          </div>
+        </div>
+        <form id="cookie-form" class="stack">
+          <label>
+            Cookie 请求头
+            <textarea id="cookie-input" rows="4" placeholder="粘贴 Cookie: SUB=...; SUBP=..."></textarea>
+          </label>
+          <div class="form-footer">
+            <span class="muted">支持直接粘贴浏览器 Network 面板中的 Cookie 请求头文本。</span>
+            <button class="button button-primary" type="submit">导入 Cookie</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">SCHEDULE</p>
+            <h2>每日计划</h2>
+          </div>
+          <span id="timezone-label" class="badge badge-neutral">Asia/Shanghai</span>
+        </div>
+        <form id="schedule-form" class="stack">
+          <label class="toggle-row">
+            <span>
+              <strong>启用自动签到</strong>
+              <small>每天按设定时间执行</small>
+            </span>
+            <input id="schedule-enabled" type="checkbox">
+          </label>
+          <label>
+            执行时间
+            <input id="schedule-time" type="time" value="09:00" required>
+          </label>
+          <button class="button button-secondary" type="submit">保存计划</button>
+        </form>
+      </section>
+
+      <section class="panel span-2">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">SUPER TOPICS</p>
+            <h2>关注的超话</h2>
+          </div>
+          <span id="selected-count" class="badge badge-neutral">0 个已启用</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>超话</th>
+                <th>远端状态</th>
+                <th>上次结果</th>
+                <th class="align-right">签到</th>
+              </tr>
+            </thead>
+            <tbody id="topics-body">
+              <tr><td colspan="4" class="empty-cell">尚未同步超话列表</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel span-2">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">ACTIVITY</p>
+            <h2>当前任务</h2>
+          </div>
+          <button id="cancel-button" class="button button-danger-ghost hidden" type="button">取消任务</button>
+        </div>
+        <div id="task-summary" class="task-summary empty-state">暂无运行中的任务</div>
+        <div id="logs" class="logs"><div class="empty-state">任务日志会显示在这里</div></div>
+      </section>
+
+      <section class="panel span-2">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">HISTORY</p>
+            <h2>执行记录</h2>
+          </div>
+          <button id="refresh-history-button" class="button button-ghost" type="button">刷新</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>类型</th>
+                <th>状态</th>
+                <th>结果</th>
+                <th class="align-right">详情</th>
+              </tr>
+            </thead>
+            <tbody id="history-body">
+              <tr><td colspan="5" class="empty-cell">暂无记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
