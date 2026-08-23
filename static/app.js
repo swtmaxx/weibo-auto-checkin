@@ -19,6 +19,28 @@
     if (message) toastTimer = window.setTimeout(() => toast.classList.remove("visible"), 4200);
   }
 
+  function setConnectionState(online) {
+    const state = $("#connection-state");
+    const indicator = $(".live-indicator");
+    if (!state || !indicator) return;
+    indicator.classList.toggle("is-offline", !online);
+    state.textContent = online ? "连接正常" : "连接中断";
+  }
+
+  function markRefresh() {
+    const label = $("#last-refresh");
+    if (!label) return;
+    label.textContent = "刚刚更新";
+    label.dataset.updatedAt = String(Date.now());
+  }
+
+  function updateRefreshLabel() {
+    const label = $("#last-refresh");
+    if (!label || !label.dataset.updatedAt) return;
+    const elapsed = Math.floor((Date.now() - Number(label.dataset.updatedAt)) / 1000);
+    label.textContent = elapsed < 5 ? "刚刚更新" : elapsed < 60 ? elapsed + " 秒前更新" : Math.floor(elapsed / 60) + " 分钟前更新";
+  }
+
   async function readResponse(response) {
     let data = {};
     try {
@@ -43,7 +65,16 @@
     if (csrf.value && config.method && config.method !== "GET") {
       config.headers["X-CSRF-Token"] = csrf.value;
     }
-    return readResponse(await fetch(url, config));
+    let response;
+    try {
+      response = await fetch(url, config);
+    } catch (error) {
+      setConnectionState(false);
+      throw error;
+    }
+    setConnectionState(true);
+    markRefresh();
+    return readResponse(response);
   }
 
   function bindAuthForms() {
@@ -234,6 +265,7 @@
     const summary = $("#task-summary");
     const cancel = $("#cancel-button");
     if (!run) {
+      state.className = "metric-value status-value status-idle";
       state.textContent = "空闲";
       detail.textContent = "";
       cancel.classList.add("hidden");
@@ -243,12 +275,21 @@
     }
     lastRunId = run.id;
     const running = run.status === "running" || run.status === "queued";
-    state.textContent = running ? "运行中" : run.status;
+    const labels = {
+      queued: ["排队中", "status-queued"],
+      running: ["执行中", "status-running"],
+      completed: ["已完成", "status-completed"],
+      failed: ["失败", "status-failed"],
+      cancelled: ["已取消", "status-cancelled"]
+    };
+    const label = labels[run.status] || [run.status, "status-idle"];
+    state.className = "metric-value status-value " + label[1];
+    state.textContent = label[0];
     detail.textContent = "任务 #" + run.id;
     cancel.classList.toggle("hidden", !running);
     summary.className = "task-summary";
     const title = document.createElement("strong");
-    title.textContent = run.kind + " · " + run.status;
+    title.textContent = (run.kind === "checkin" ? "立即签到" : "同步超话") + " · " + label[0];
     const info = document.createElement("span");
     const data = run.summary || {};
     info.textContent = running
@@ -292,7 +333,24 @@
       const kind = document.createElement("td");
       kind.textContent = run.kind;
       const state = document.createElement("td");
-      state.textContent = run.status;
+      const stateBadge = document.createElement("span");
+      const stateClass = {
+        completed: "badge-green",
+        failed: "badge-red",
+        cancelled: "badge-amber",
+        running: "badge-blue",
+        queued: "badge-blue"
+      }[run.status] || "badge-neutral";
+      const stateLabel = {
+        completed: "已完成",
+        failed: "失败",
+        cancelled: "已取消",
+        running: "执行中",
+        queued: "排队中"
+      }[run.status] || run.status;
+      stateBadge.className = "badge " + stateClass;
+      stateBadge.textContent = stateLabel;
+      state.appendChild(stateBadge);
       const result = document.createElement("td");
       const summary = run.summary || {};
       result.textContent = run.error || ("成功 " + (summary.success || 0) + " · 已签到 " + (summary.already || 0) + " · 失败 " + (summary.failed || 0));
@@ -602,13 +660,25 @@
     window.setInterval(refreshQQOpenids, 5000);
   }
 
-  async function startTask(endpoint, label) {
+  async function startTask(endpoint, label, buttonSelector, workingLabel) {
+    const button = $(buttonSelector);
+    if (button) {
+      button.disabled = true;
+      button.classList.add("is-loading");
+      button.textContent = workingLabel;
+    }
     try {
       await request(endpoint, { method: "POST" });
       showToast(label + "已开始", false);
       await loadCurrentTask();
     } catch (err) {
       showToast(err.message, true);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove("is-loading");
+        button.textContent = label;
+      }
     }
   }
 
@@ -656,15 +726,19 @@
         showToast(err.message, true);
       }
     });
-    $("#sync-button").addEventListener("click", () => startTask("/api/topics/sync", "同步任务"));
-    $("#checkin-button").addEventListener("click", () => startTask("/api/tasks/checkin", "签到任务"));
+    $("#sync-button").addEventListener("click", () => startTask("/api/topics/sync", "同步超话", "#sync-button", "同步中…"));
+    $("#checkin-button").addEventListener("click", () => startTask("/api/tasks/checkin", "立即签到", "#checkin-button", "签到中…"));
     $("#cancel-button").addEventListener("click", async () => {
+      const button = $("#cancel-button");
+      button.disabled = true;
       try {
         await request("/api/tasks/cancel", { method: "POST" });
         showToast("已发出取消请求", false);
         await loadCurrentTask();
       } catch (err) {
         showToast(err.message, true);
+      } finally {
+        button.disabled = false;
       }
     });
     $("#schedule-form").addEventListener("submit", async (event) => {
@@ -696,6 +770,7 @@
       const clock = $("#clock");
       if (clock) clock.textContent = new Date().toLocaleString("zh-CN", { hour12: false });
     }, 1000);
+    window.setInterval(updateRefreshLabel, 5000);
   }
 
   bindAuthForms();

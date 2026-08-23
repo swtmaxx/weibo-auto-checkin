@@ -18,7 +18,7 @@
       </div>
       <div class="topbar-actions">
         <a class="button button-ghost" href="/settings">设置</a>
-        <span id="clock" class="muted"></span>
+        <span id="clock" class="topbar-clock muted"></span>
         <button id="logout-button" class="button button-ghost" type="button">退出</button>
       </div>
     </div>
@@ -30,6 +30,10 @@
       <div>
         <p class="eyebrow">CONTROL CENTER</p>
         <h1>签到工作台</h1>
+        <div class="workspace-meta">
+          <span class="live-indicator"><span class="live-dot"></span><span id="connection-state">正在连接</span></span>
+          <span id="last-refresh" class="muted">数据加载中</span>
+        </div>
       </div>
       <div class="heading-actions">
         <button id="sync-button" class="button button-secondary" type="button">同步超话</button>
@@ -38,22 +42,22 @@
     </section>
 
     <section class="status-grid">
-      <article class="metric">
+      <article class="metric metric-account">
         <span class="metric-label">账号状态</span>
         <strong id="account-state" class="metric-value">读取中</strong>
         <span id="account-detail" class="metric-detail"></span>
       </article>
-      <article class="metric">
+      <article class="metric metric-topics">
         <span class="metric-label">已发现超话</span>
         <strong id="topic-count" class="metric-value">0</strong>
         <span class="metric-detail">本地列表</span>
       </article>
-      <article class="metric">
+      <article class="metric metric-task">
         <span class="metric-label">当前任务</span>
         <strong id="task-state" class="metric-value">空闲</strong>
         <span id="task-detail" class="metric-detail"></span>
       </article>
-      <article class="metric">
+      <article class="metric metric-schedule">
         <span class="metric-label">每日计划</span>
         <strong id="schedule-state" class="metric-value">未启用</strong>
         <span id="schedule-detail" class="metric-detail"></span>
@@ -61,7 +65,7 @@
     </section>
 
     <div class="layout-grid">
-      <section class="panel span-2">
+      <section class="panel span-2 account-panel">
         <div class="panel-header">
           <div>
             <p class="eyebrow">ACCOUNT</p>
@@ -148,8 +152,8 @@
           </div>
           <button id="cancel-button" class="button button-danger-ghost hidden" type="button">取消任务</button>
         </div>
-        <div id="task-summary" class="task-summary empty-state">暂无运行中的任务</div>
-        <div id="logs" class="logs"><div class="empty-state">任务日志会显示在这里</div></div>
+        <div id="task-summary" class="task-summary empty-state" aria-live="polite">暂无运行中的任务</div>
+        <div id="logs" class="logs" aria-live="polite"><div class="empty-state">任务日志会显示在这里</div></div>
       </section>
 
       <section class="panel span-2">
