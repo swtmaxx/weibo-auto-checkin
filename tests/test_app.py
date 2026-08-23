@@ -90,3 +90,38 @@ def test_protected_endpoint_requires_login(tmp_path: Path):
     with client:
         response = client.get("/api/topics")
         assert response.status_code == 401
+
+
+def test_change_password_requires_current_password_and_reauthenticates(tmp_path: Path):
+    client = make_client(tmp_path)
+    with client:
+        setup = client.post("/api/auth/setup", json={"password": "old-admin-password"})
+        csrf = setup.json()["csrf_token"]
+
+        mismatch = client.post(
+            "/api/auth/password",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "current_password": "old-admin-password",
+                "new_password": "new-admin-password",
+                "confirm_password": "different-password",
+            },
+        )
+        assert mismatch.status_code == 400
+        assert mismatch.json()["detail"] == "两次输入的新密码不一致"
+
+        changed = client.post(
+            "/api/auth/password",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "current_password": "old-admin-password",
+                "new_password": "new-admin-password",
+                "confirm_password": "new-admin-password",
+            },
+        )
+        assert changed.status_code == 200
+        assert changed.json()["reauthenticate"] is True
+        assert client.get("/api/account").status_code == 401
+
+        login = client.post("/api/auth/login", json={"password": "new-admin-password"})
+        assert login.status_code == 200
