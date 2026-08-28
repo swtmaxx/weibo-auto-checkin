@@ -102,3 +102,7 @@ QQ Gateway 监听需要服务器能够访问 `api.bot.qq.com`，并且机器人�
 测试不会连接真实微博，所有 HTTP 请求均使用 mock transport：
 
     python -m pytest
+
+## License
+
+MIT，详见 [LICENSE](LICENSE)。
