@@ -21,7 +21,8 @@
 - 粘贴浏览器复制的 Cookie 请求头即可导入账号，服务器只保存 Fernet 加密后的 Cookie
 - 使用 `m.weibo.cn/api/config` 验证登录状态
 - 从 `m.weibo.cn/api/container/getIndex` 分页同步关注的超话
-- 逐个执行微博返回的合法签到 scheme
+- 逐个执行微博返回的合法签到 scheme，验签失效时自动重取 st 重试
+- 自动合并服务器通过 Set-Cookie 换发的新 Cookie 并加密回写，会话随使用持续续期
 - 新同步的超话默认关闭，已有启用状态会保留
 
 **任务与调度**
@@ -106,7 +107,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `APP_PORT` | `8000` | 监听端口 |
 | `APP_COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
 | `APP_TIMEZONE` | `Asia/Shanghai` | 调度使用的时区 |
-| `APP_CHECKIN_DELAY_SECONDS` | `10.0` | 两次签到请求之间的间隔；WebUI 保存的值优先 |
+| `APP_CHECKIN_DELAY_SECONDS` | `10.0` | 两次签到请求之间的间隔（实际按 ±25% 随机抖动执行）；WebUI 保存的值优先 |
 | `APP_MAX_TOPICS_PER_RUN` | `0` | 单次最多处理的超话数量，0 表示不限制 |
 | `APP_MAX_CONSECUTIVE_FAILURES` | `3` | 连续失败后停止，0 表示不启用 |
 | `APP_REQUEST_TIMEOUT_SECONDS` | `15` | 微博请求超时秒数 |

@@ -7,6 +7,7 @@ from app.weibo import (
     CookieFormatError,
     WeiboClient,
     WeiboRequestError,
+    merge_renewed_cookies,
     normalize_cookie,
 )
 
@@ -155,4 +156,67 @@ def test_weibo_client_rejects_non_container_scheme():
             client.checkin("https://example.com/checkin")
     finally:
         client.close()
+
+
+def test_client_collects_cookies_reissued_by_server():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"data": {"login": True}},
+            headers={"Set-Cookie": "SUB=renewed-value; Domain=.weibo.cn; Path=/"},
+            request=request,
+        )
+
+    client = WeiboClient(
+        "SUB=old; SUBP=keep",
+        transport=httpx.MockTransport(handler),
+        retry_delay=0,
+    )
+    try:
+        client.verify_login()
+        assert client.renewed_cookies() == {"SUB": "renewed-value"}
+        # 手动请求头已被 jar 取代,但发送内容一致
+    finally:
+        client.close()
+
+
+def test_merge_renewed_cookies_updates_values_and_appends_new():
+    merged = merge_renewed_cookies("SUB=old; SUBP=keep", {"SUB": "new", "XSRF-TOKEN": "t1"})
+    assert merged == "SUB=new; SUBP=keep; XSRF-TOKEN=t1"
+
+
+def test_checkin_retries_once_with_fresh_st_on_verify_error():
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/api/container/button":
+            if "st" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={"ok": 0, "errno": "100015", "msg": "验签失败"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"data": {"ok": 1, "msg": "签到成功"}},
+                request=request,
+            )
+        if request.url.path == "/api/config":
+            return httpx.Response(
+                200,
+                json={"data": {"login": True, "st": "st-token-1"}},
+                request=request,
+            )
+        return httpx.Response(404, request=request)
+
+    client = WeiboClient("SUB=abc", transport=httpx.MockTransport(handler), retry_delay=0)
+    try:
+        result = client.checkin("/api/container/button?x=1")
+    finally:
+        client.close()
+
+    assert result.status == "success"
+    assert len(calls) == 3
+    assert calls[2].url.params["st"] == "st-token-1"
 

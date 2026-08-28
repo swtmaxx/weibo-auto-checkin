@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.config import NotificationSettings, RuntimePolicy, Settings
 from app.db import Database
-from app.security import encrypt_cookie
+from app.security import decrypt_cookie, encrypt_cookie
 from app.tasks import RunBusyError, TaskManager
 from app.weibo import CheckinResult, LoginStatus, TopicSnapshot, WeiboRiskError
 
@@ -177,6 +177,31 @@ def test_notification_failure_does_not_change_completed_run(tmp_path: Path):
     assert run["status"] == "completed"
     assert notification.calls
     assert any("QQ 通知发送失败" in log["message"] for log in run["logs"])
+
+
+class RenewingClient(FakeClient):
+    def renewed_cookies(self):
+        return {"SUB": "renewed-value", "NEW-TOKEN": "xyz"}
+
+
+def test_task_manager_renews_cookie_and_keeps_verification_state(tmp_path: Path):
+    settings, database = make_task_database(tmp_path)
+    database.upsert_topics(
+        [{"topic_key": "topic-1", "name": "可签到超话", "remote_status": "unknown", "checkin_scheme": None}]
+    )
+    assert database.update_topic_enabled("topic-1", True)
+    manager = TaskManager(database, settings, client_factory=RenewingClient)
+    run_id = manager.start("checkin")
+    run = wait_for_run(database, run_id)
+
+    assert run["status"] == "completed"
+    assert any("Cookie 已续期" in log["message"] for log in run["logs"])
+    assert run["summary"]["renewed_cookies"] == ["NEW-TOKEN", "SUB"]
+    account = database.get_account()
+    assert account["logged_in"] == 1
+    merged = decrypt_cookie(account["cookie_ciphertext"], settings.secret_key)
+    assert "SUB=renewed-value" in merged
+    assert "NEW-TOKEN=xyz" in merged
 
 
 def test_consecutive_failures_stop_the_run(tmp_path: Path):

@@ -79,6 +79,28 @@ def normalize_cookie(raw_cookie: str) -> str:
     return "; ".join(pairs)
 
 
+def merge_renewed_cookies(base: str, updates: dict[str, str]) -> str:
+    """Merge re-issued cookie values into a canonical cookie header string."""
+    pairs: list[tuple[str, str]] = []
+    index: dict[str, int] = {}
+    for part in base.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name and name not in index:
+            index[name] = len(pairs)
+            pairs.append((name, value.strip()))
+    for name, value in updates.items():
+        if name in index:
+            pairs[index[name]] = (name, value)
+        else:
+            index[name] = len(pairs)
+            pairs.append((name, value))
+    return "; ".join(f"{name}={value}" for name, value in pairs)
+
+
 @dataclass(frozen=True)
 class LoginStatus:
     logged_in: bool
@@ -120,10 +142,18 @@ class WeiboClient:
         self.timeout = timeout
         self.retry_delay = retry_delay
         self.read_retry_count = max(0, min(2, int(read_retry_count)))
+        self._initial: dict[str, str] = {}
+        cookies = httpx.Cookies()
+        for item in self.cookie.split("; "):
+            name, _, value = item.partition("=")
+            if name and value:
+                cookies.set(name, value, domain=httpx.URL(base_url or self.base_url).host)
+                self._initial[name] = value
         self._client = httpx.Client(
             base_url=base_url or self.base_url,
             transport=transport,
             follow_redirects=True,
+            cookies=cookies,
             headers={
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -133,19 +163,29 @@ class WeiboClient:
                 ),
             },
         )
-        xsrf = self._cookie_value("XSRF-TOKEN")
-        if xsrf:
-            self._client.headers["X-XSRF-TOKEN"] = xsrf
 
     def close(self) -> None:
         self._client.close()
 
-    def _cookie_value(self, name: str) -> str | None:
-        for item in self.cookie.split("; "):
-            key, _, value = item.partition("=")
-            if key == name:
-                return value
-        return None
+    def _jar_value(self, name: str) -> str | None:
+        value = None
+        for cookie in self._client.cookies.jar:
+            if cookie.name == name and cookie.value:
+                value = cookie.value
+        return value
+
+    def renewed_cookies(self) -> dict[str, str]:
+        """Cookie values re-issued by the server during this client's lifetime."""
+        current = {
+            cookie.name: cookie.value
+            for cookie in self._client.cookies.jar
+            if cookie.value
+        }
+        return {
+            name: value
+            for name, value in current.items()
+            if self._initial.get(name) != value
+        }
 
     def _request(
         self,
@@ -157,10 +197,12 @@ class WeiboClient:
         risk_on_forbidden: bool = True,
     ) -> dict[str, Any]:
         headers = {
-            "Cookie": self.cookie,
             "Referer": referer,
             "X-Requested-With": "XMLHttpRequest",
         }
+        xsrf = self._jar_value("XSRF-TOKEN") or self._initial.get("XSRF-TOKEN")
+        if xsrf:
+            headers["X-XSRF-TOKEN"] = xsrf
         last_error: Exception | None = None
         max_retries = self.read_retry_count if retry else 0
         for attempt in range(max_retries + 1):
@@ -294,12 +336,35 @@ class WeiboClient:
     def checkin(self, scheme: str) -> CheckinResult:
         if not scheme.startswith("/api/container/button"):
             raise WeiboRequestError("拒绝执行非微博容器签到 scheme")
-        payload = self._request(
-            scheme,
-            referer="https://m.weibo.cn/p/index?containerid=100803_-_followsuper",
-            retry=False,
-            risk_on_forbidden=True,
-        )
+        referer = "https://m.weibo.cn/p/index?containerid=100803_-_followsuper"
+        payload = self._request(scheme, referer=referer, retry=False, risk_on_forbidden=True)
+        if self._is_st_error(payload):
+            st = self._fetch_st()
+            if st:
+                payload = self._request(
+                    scheme,
+                    params={"st": st},
+                    referer=referer,
+                    retry=False,
+                    risk_on_forbidden=True,
+                )
+        return self._parse_checkin(payload)
+
+    @staticmethod
+    def _is_st_error(payload: dict[str, Any]) -> bool:
+        if str(payload.get("errno") or "") == "100015":
+            return True
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        message = str(payload.get("msg") or payload.get("message") or data.get("msg") or "")
+        return "验签" in message
+
+    def _fetch_st(self) -> str | None:
+        payload = self._request("/api/config")
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        st = data.get("st")
+        return str(st) if st else None
+
+    def _parse_checkin(self, payload: dict[str, Any]) -> CheckinResult:
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
         message = str(
             data.get("msg")
