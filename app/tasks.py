@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import random
 import threading
 from datetime import datetime
@@ -11,6 +12,11 @@ from .db import Database
 from .notifications import NotificationService
 from .security import decrypt_cookie, encrypt_cookie
 from .weibo import WeiboAuthError, WeiboClient, WeiboRiskError, merge_renewed_cookies
+
+logger = logging.getLogger(__name__)
+
+TASK_KINDS = {"sync", "checkin", "scheduled", "single"}
+COOLDOWN_KINDS = {"checkin", "scheduled", "single"}
 
 
 class RunBusyError(RuntimeError):
@@ -71,10 +77,10 @@ class TaskManager:
         except Exception:
             pass
 
-    def start(self, kind: str) -> int:
-        if kind not in {"sync", "checkin", "scheduled"}:
+    def start(self, kind: str, *, topic_key: str | None = None) -> int:
+        if kind not in TASK_KINDS:
             raise ValueError(f"unsupported task kind: {kind}")
-        if kind in {"checkin", "scheduled"} and self.runtime_state.is_cooling_down():
+        if kind in COOLDOWN_KINDS and self.runtime_state.is_cooling_down():
             status = self.runtime_state.cooldown_status()
             raise RunBusyError(f"微博风控冷却中，截止 {status['until']}")
         if not self._operation_lock.acquire(blocking=False):
@@ -92,7 +98,7 @@ class TaskManager:
         try:
             thread = threading.Thread(
                 target=self._worker,
-                args=(run_id, kind, cancel_event),
+                args=(run_id, kind, cancel_event, topic_key),
                 name=f"weibo-run-{run_id}",
                 daemon=True,
             )
@@ -131,7 +137,13 @@ class TaskManager:
             self._close_client(client)
             self._operation_lock.release()
 
-    def _worker(self, run_id: int, kind: str, cancel_event: threading.Event) -> None:
+    def _worker(
+        self,
+        run_id: int,
+        kind: str,
+        cancel_event: threading.Event,
+        topic_key: str | None = None,
+    ) -> None:
         logger = RunLogger(self.db, run_id)
         client = None
         summary: dict[str, Any] = {}
@@ -149,6 +161,15 @@ class TaskManager:
             if not login.logged_in:
                 raise WeiboAuthError(login.message)
             logger.success(login.message)
+
+            if kind == "single":
+                summary = self._run_single_checkin(client, topic_key, logger)
+                renewed = self._persist_renewed_cookies(client, cookie, logger)
+                if renewed:
+                    summary["renewed_cookies"] = renewed
+                status = "cancelled" if cancel_event.is_set() else "completed"
+                self.db.finish_run(run_id, status, summary)
+                return
 
             logger.info("正在读取关注的超话列表")
             snapshots = client.list_topics(cancel_event)
@@ -180,7 +201,7 @@ class TaskManager:
             self.db.finish_run(run_id, status, summary)
         except WeiboRiskError as exc:
             cooldown = (
-                self.runtime_state.set_cooldown(str(exc))
+                self._safe_set_cooldown(str(exc), logger)
                 if policy.cooldown_on_rate_limit
                 else None
             )
@@ -191,16 +212,17 @@ class TaskManager:
             else:
                 logger.error(str(exc))
             self.db.finish_run(run_id, "failed", summary, str(exc))
-            self._notify(
-                logger,
-                event="risk" if cooldown else "failed",
-                run_id=run_id,
-                kind=kind,
-                status="failed",
-                summary=summary,
-                error=str(exc),
-                cooldown=cooldown,
-            )
+            if kind != "single":
+                self._notify(
+                    logger,
+                    event="risk" if cooldown else "failed",
+                    run_id=run_id,
+                    kind=kind,
+                    status="failed",
+                    summary=summary,
+                    error=str(exc),
+                    cooldown=cooldown,
+                )
         except RiskCooldownError as exc:
             self.db.finish_run(run_id, "failed", summary, str(exc))
             self._notify(
@@ -219,17 +241,18 @@ class TaskManager:
                 run_id,
                 "cancelled" if cancel_event.is_set() else "failed",
                 summary,
-                str(exc),
+                str(exc)[:500],
             )
-            self._notify(
-                logger,
-                event="failed",
-                run_id=run_id,
-                kind=kind,
-                status="failed",
-                summary=summary,
-                error=str(exc),
-            )
+            if kind != "single":
+                self._notify(
+                    logger,
+                    event="failed",
+                    run_id=run_id,
+                    kind=kind,
+                    status="failed",
+                    summary=summary,
+                    error=str(exc),
+                )
         finally:
             self._close_client(client)
             with self._state_lock:
@@ -252,6 +275,14 @@ class TaskManager:
             self.notification_service.notify_run(**kwargs)
         except Exception as exc:
             logger.warning(f"QQ 通知发送失败: {str(exc)[:300]}")
+
+    def _safe_set_cooldown(self, reason: str, logger: RunLogger) -> dict[str, Any] | None:
+        """Cooldown bookkeeping must never raise, or the worker dies with the run stuck."""
+        try:
+            return self.runtime_state.set_cooldown(reason)
+        except Exception as exc:
+            logger.error(f"写入冷却状态失败: {exc}")
+            return None
 
     def _persist_renewed_cookies(
         self,
@@ -385,6 +416,43 @@ class TaskManager:
         return summary
 
 
+    def _run_single_checkin(
+        self,
+        client: Any,
+        topic_key: str | None,
+        logger: RunLogger,
+    ) -> dict[str, Any]:
+        if not topic_key:
+            raise RuntimeError("缺少超话标识")
+        topic = self.db.get_topic(topic_key)
+        if not topic:
+            raise RuntimeError("超话不存在，请先同步超话列表")
+        summary = {"selected": 1, "success": 0, "already": 0, "failed": 0}
+        if topic["remote_status"] == "signed":
+            summary["already"] = 1
+            self.db.update_topic_result(topic["topic_key"], "signed", "今日已签到")
+            logger.info(f"{topic['name']}: 今日已签到")
+            return summary
+        scheme = topic["checkin_scheme"]
+        if not scheme:
+            summary["failed"] = 1
+            raise RuntimeError("该超话没有可执行的签到 scheme，请先同步超话")
+        result = client.checkin(scheme)
+        if result.status == "success":
+            summary["success"] = 1
+            self.db.update_topic_result(topic["topic_key"], "signed", result.message)
+            logger.success(f"{topic['name']}: {result.message}")
+        elif result.status == "already":
+            summary["already"] = 1
+            self.db.update_topic_result(topic["topic_key"], "signed", result.message)
+            logger.info(f"{topic['name']}: {result.message}")
+        else:
+            summary["failed"] = 1
+            self.db.update_topic_result(topic["topic_key"], "available", result.message)
+            logger.warning(f"{topic['name']}: {result.message}")
+        return summary
+
+
 class Scheduler:
     def __init__(self, db: Database, settings: Settings, manager: TaskManager):
         self.db = db
@@ -392,6 +460,21 @@ class Scheduler:
         self.manager = manager
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._last_prune_date: str | None = None
+
+    @staticmethod
+    def should_fire(
+        now_hhmm: str,
+        run_time: str,
+        last_run_date: str | None,
+        today: str,
+        catch_up: bool,
+    ) -> bool:
+        if last_run_date == today:
+            return False
+        if catch_up:
+            return now_hhmm >= run_time
+        return now_hhmm == run_time
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -417,8 +500,13 @@ class Scheduler:
                 today = now.date().isoformat()
                 if (
                     schedule["enabled"]
-                    and now.strftime("%H:%M") >= schedule["run_time"]
-                    and schedule["last_run_date"] != today
+                    and self.should_fire(
+                        now.strftime("%H:%M"),
+                        schedule["run_time"],
+                        schedule["last_run_date"],
+                        today,
+                        self.settings.schedule_catch_up,
+                    )
                 ):
                     try:
                         self.manager.start("scheduled")
@@ -426,6 +514,18 @@ class Scheduler:
                         pass
                     else:
                         self.db.mark_schedule_run(today)
+                if (
+                    self.settings.history_retention_days
+                    and self._last_prune_date != today
+                ):
+                    pruned = self.db.prune_history(self.settings.history_retention_days)
+                    if pruned:
+                        logger.info(
+                            "已清理 %d 条超过 %d 天的任务记录",
+                            pruned,
+                            self.settings.history_retention_days,
+                        )
+                    self._last_prune_date = today
             except Exception:
-                pass
+                logger.exception("签到调度循环出错")
             self._stop_event.wait(self.settings.scheduler_poll_seconds)

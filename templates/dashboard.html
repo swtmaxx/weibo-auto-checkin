@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>微博超话签到</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e141b" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="dashboard-page">
@@ -62,6 +65,21 @@
         <strong id="schedule-state" class="metric-value">未启用</strong>
         <span id="schedule-detail" class="metric-detail"></span>
       </article>
+    </section>
+
+    <section class="stats-strip">
+      <div class="stat">
+        <span class="stat-label">近 7 天成功率</span>
+        <strong id="stat-success-rate">—</strong>
+      </div>
+      <div class="stat">
+        <span class="stat-label">近 7 天成功签到</span>
+        <strong id="stat-success-count">—</strong>
+      </div>
+      <div class="stat">
+        <span class="stat-label">连续签到</span>
+        <strong id="stat-streak">—</strong>
+      </div>
     </section>
 
     <div class="layout-grid">
@@ -127,6 +145,19 @@
           </div>
           <span id="selected-count" class="badge badge-neutral">0 个已启用</span>
         </div>
+        <div class="topics-toolbar">
+          <input id="topic-search" type="search" placeholder="搜索超话名称">
+          <select id="topic-status-filter" aria-label="按状态筛选">
+            <option value="all">全部状态</option>
+            <option value="available">可签到</option>
+            <option value="signed">已签到</option>
+            <option value="unknown">未知</option>
+          </select>
+          <span id="topic-filtered-count" class="muted"></span>
+          <span class="toolbar-spacer"></span>
+          <button id="topics-enable-all" class="button button-ghost button-small" type="button">全部启用</button>
+          <button id="topics-disable-all" class="button button-ghost button-small" type="button">全部停用</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -183,6 +214,7 @@
       </section>
     </div>
   </main>
+  <footer class="page-footer">微博超话签到 · 单账号自托管 · Cookie 仅加密存储</footer>
   <script src="/static/app.js"></script>
 </body>
 </html>

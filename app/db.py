@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 def utc_now() -> str:
@@ -158,6 +159,26 @@ class Database:
                 (ciphertext, now),
             )
 
+    def restore_cookie(self, ciphertext: str, imported_at: str | None = None) -> None:
+        """Persist a cookie ciphertext coming from a configuration backup."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO account (
+                    id, cookie_ciphertext, imported_at, logged_in, verification_message
+                ) VALUES (1, ?, ?, 0, '已从备份导入，待验证')
+                ON CONFLICT(id) DO UPDATE SET
+                    cookie_ciphertext = excluded.cookie_ciphertext,
+                    imported_at = excluded.imported_at,
+                    last_verified_at = NULL,
+                    logged_in = 0,
+                    login_uid = NULL,
+                    login_name = NULL,
+                    verification_message = excluded.verification_message
+                """,
+                (ciphertext, imported_at or utc_now()),
+            )
+
     def update_cookie_value(self, ciphertext: str) -> bool:
         """Persist a re-issued cookie value without resetting verification state."""
         with self._lock, self._connect() as conn:
@@ -230,6 +251,28 @@ class Database:
                 """
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def get_topic(self, topic_key: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT topic_key, name, description, enabled, remote_status,
+                       checkin_scheme, first_seen_at, last_seen_at, last_result
+                FROM topics WHERE topic_key = ?
+                """,
+                (topic_key,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def set_topics_enabled(self, topic_keys: list[str], enabled: bool) -> int:
+        if not topic_keys:
+            return 0
+        with self._lock, self._connect() as conn:
+            cursor = conn.executemany(
+                "UPDATE topics SET enabled = ? WHERE topic_key = ?",
+                [(int(enabled), key) for key in topic_keys],
+            )
+            return max(0, cursor.rowcount)
 
     def update_topic_enabled(self, topic_key: str, enabled: bool) -> bool:
         with self._lock, self._connect() as conn:
@@ -357,6 +400,72 @@ class Database:
                 """
             ).fetchone()
         return self.get_run(int(row["id"])) if row else None
+
+    def prune_history(self, retention_days: int) -> int:
+        """Delete runs (and cascaded logs) older than the retention window."""
+        if retention_days <= 0:
+            return 0
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat(timespec="seconds")
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute("DELETE FROM runs WHERE created_at < ?", (cutoff,))
+            return max(0, cursor.rowcount)
+
+    def compute_stats(self, timezone_name: str, days: int = 7) -> dict[str, Any]:
+        """Aggregate recent check-in outcomes and the current sign-in streak."""
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = timezone.utc
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat(timespec="seconds")
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, created_at, summary_json FROM runs
+                WHERE created_at >= ? AND kind IN ('checkin', 'scheduled')
+                """,
+                (cutoff,),
+            ).fetchall()
+        totals = {"success": 0, "already": 0, "failed": 0}
+        completed_runs = 0
+        run_days: set[str] = set()
+        for row in rows:
+            if row["status"] != "completed":
+                continue
+            completed_runs += 1
+            try:
+                summary = json.loads(row["summary_json"] or "{}")
+            except json.JSONDecodeError:
+                summary = {}
+            for key in totals:
+                totals[key] += max(0, int(summary.get(key) or 0))
+            try:
+                local_day = (
+                    datetime.fromisoformat(row["created_at"]).astimezone(zone).date()
+                )
+            except ValueError:
+                continue
+            run_days.add(local_day.isoformat())
+        attempted = totals["success"] + totals["already"] + totals["failed"]
+        streak = 0
+        day = datetime.now(zone).date()
+        if day.isoformat() not in run_days:
+            day -= timedelta(days=1)
+        while day.isoformat() in run_days and streak < 366:
+            streak += 1
+            day -= timedelta(days=1)
+        return {
+            "days": days,
+            "completed_runs": completed_runs,
+            "success": totals["success"],
+            "already": totals["already"],
+            "failed": totals["failed"],
+            "success_rate": (totals["success"] + totals["already"]) / attempted if attempted else None,
+            "streak_days": streak,
+        }
 
     def get_schedule(self) -> dict[str, Any]:
         with self._lock, self._connect() as conn:

@@ -158,6 +158,28 @@ def test_task_manager_cools_down_after_weibo_risk_and_notifies(tmp_path: Path):
         raise AssertionError("cooldown should block check-in")
 
 
+def test_worker_survives_cooldown_write_failure(tmp_path: Path):
+    settings, database = make_task_database(tmp_path)
+    database.upsert_topics(
+        [{"topic_key": "risk-topic", "name": "风险超话", "remote_status": "unknown", "checkin_scheme": None}]
+    )
+    assert database.update_topic_enabled("risk-topic", True)
+    manager = TaskManager(database, settings, client_factory=RiskClient)
+
+    def broken_set_cooldown(reason: str):
+        raise RuntimeError("cooldown write exploded")
+
+    manager.runtime_state.set_cooldown = broken_set_cooldown
+    run_id = manager.start("checkin")
+    run = wait_for_run(database, run_id)
+
+    assert run["status"] == "failed"
+    assert run["summary"]["risk_status"] == 429
+    assert "cooldown_until" not in run["summary"]
+    assert any("写入冷却状态失败" in log["message"] for log in run["logs"])
+    assert manager.runtime_state.cooldown_status()["active"] is False
+
+
 def test_notification_failure_does_not_change_completed_run(tmp_path: Path):
     settings, database = make_task_database(tmp_path)
     database.upsert_topics(

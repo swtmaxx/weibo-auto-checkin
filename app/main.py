@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,15 +14,18 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import NotificationSettings, RuntimePolicy, RuntimeState, Settings
-from .db import Database
+from .db import Database, utc_now
 from .notifications import NotificationService
 from .qqbot import QQBotError
 from .qqevents import QQEventListener
 from .security import (
+    LoginThrottle,
+    decrypt_cookie,
     encrypt_cookie,
     hash_password,
     new_csrf_token,
     same_secret,
+    secret_fingerprint,
     verify_password,
 )
 from .tasks import RunBusyError, Scheduler, TaskManager
@@ -44,6 +48,21 @@ class CookiePayload(BaseModel):
 
 class TopicTogglePayload(BaseModel):
     enabled: bool
+
+
+class TopicBulkPayload(BaseModel):
+    enabled: bool
+    topic_keys: list[str] = Field(default_factory=list, max_length=10000)
+
+
+class ConfigImportPayload(BaseModel):
+    version: int
+    secret_fingerprint: str = Field(default="", max_length=64)
+    schedule: dict[str, Any] | None = None
+    runtime_policy: dict[str, Any] | None = None
+    notifications: dict[str, Any] | None = None
+    account: dict[str, Any] | None = None
+    topics: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
 
 
 class SchedulePayload(BaseModel):
@@ -148,6 +167,7 @@ def create_app(
     )
     scheduler = Scheduler(app_db, app_settings, task_manager)
     qq_listener = QQEventListener(app_db, runtime_state)
+    login_throttle = LoginThrottle()
     templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 
     @asynccontextmanager
@@ -232,9 +252,15 @@ def create_app(
 
     @app.post("/api/auth/login")
     async def login(payload: PasswordPayload, request: Request):
+        client_host = request.client.host if request.client else "unknown"
+        delay = login_throttle.delay_for(client_host)
+        if delay > 0:
+            await asyncio.sleep(delay)
         password_hash = app_db.get_config("admin_password_hash")
         if not password_hash or not verify_password(password_hash, payload.password):
+            login_throttle.record_failure(client_host)
             raise HTTPException(status_code=401, detail="密码错误")
+        login_throttle.reset(client_host)
         request.session.clear()
         request.session["authenticated"] = True
         request.session["csrf_token"] = new_csrf_token()
@@ -316,6 +342,25 @@ def create_app(
             raise HTTPException(status_code=404, detail="超话不存在")
         return {"ok": True}
 
+    @app.post("/api/topics/bulk", dependencies=[Depends(require_csrf)])
+    async def bulk_topics(payload: TopicBulkPayload):
+        if any(len(key) > 512 for key in payload.topic_keys):
+            raise HTTPException(status_code=422, detail="topic_key 过长")
+        updated = app_db.set_topics_enabled(payload.topic_keys, payload.enabled)
+        return {"ok": True, "updated": updated}
+
+    @app.post("/api/topics/{topic_key}/checkin", dependencies=[Depends(require_csrf)])
+    async def checkin_single_topic(topic_key: str):
+        if len(topic_key) > 512:
+            raise HTTPException(status_code=422, detail="topic_key 过长")
+        if not app_db.get_topic(topic_key):
+            raise HTTPException(status_code=404, detail="超话不存在")
+        try:
+            run_id = task_manager.start("single", topic_key=topic_key)
+        except RunBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "run_id": run_id}
+
     @app.post("/api/tasks/checkin", dependencies=[Depends(require_csrf)])
     async def start_checkin():
         try:
@@ -344,6 +389,10 @@ def create_app(
         if not run:
             raise HTTPException(status_code=404, detail="任务记录不存在")
         return run
+
+    @app.get("/api/stats", dependencies=[Depends(require_auth)])
+    async def stats():
+        return app_db.compute_stats(app_settings.timezone)
 
     @app.get("/api/schedule", dependencies=[Depends(require_auth)])
     async def get_schedule():
@@ -436,6 +485,104 @@ def create_app(
             "listener": qq_listener.status(),
         }
 
+    @app.get("/api/config/export", dependencies=[Depends(require_auth)])
+    async def export_config():
+        account = app_db.get_account()
+        return {
+            "version": 1,
+            "exported_at": utc_now(),
+            "secret_fingerprint": secret_fingerprint(app_settings.secret_key),
+            "schedule": app_db.get_schedule(),
+            "runtime_policy": runtime_state.snapshot()[0].to_dict(),
+            "notifications": app_db.get_json_config("notification_settings") or {},
+            "account": (
+                {
+                    "cookie_ciphertext": account["cookie_ciphertext"],
+                    "imported_at": account["imported_at"],
+                }
+                if account
+                else None
+            ),
+            "topics": [
+                {
+                    "topic_key": topic["topic_key"],
+                    "name": topic["name"],
+                    "description": topic["description"],
+                    "enabled": bool(topic["enabled"]),
+                }
+                for topic in app_db.list_topics()
+            ],
+        }
+
+    @app.post("/api/config/import", dependencies=[Depends(require_csrf)])
+    async def import_config(payload: ConfigImportPayload):
+        if payload.version != 1:
+            raise HTTPException(status_code=422, detail="不支持的配置文件版本")
+        has_secrets = bool(
+            (payload.account or {}).get("cookie_ciphertext")
+            or (payload.notifications or {}).get("client_secret_ciphertext")
+        )
+        if has_secrets and payload.secret_fingerprint != secret_fingerprint(
+            app_settings.secret_key
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="APP_SECRET_KEY 与导出时不一致，无法导入加密数据；请先在目标服务器设置原服务器的 APP_SECRET_KEY",
+            )
+
+        imported_topics = 0
+        try:
+            if payload.schedule:
+                run_time = str(payload.schedule.get("run_time") or "")
+                if not re.match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", run_time):
+                    raise ValueError("配置文件中的执行时间格式错误")
+                app_db.save_schedule(bool(payload.schedule.get("enabled")), run_time)
+            if payload.runtime_policy:
+                policy, _ = runtime_state.snapshot()
+                runtime_state.import_policy(
+                    RuntimePolicy.from_mapping(payload.runtime_policy, fallback=policy)
+                )
+            if payload.notifications is not None:
+                runtime_state.import_notification_raw(payload.notifications)
+            if payload.account and payload.account.get("cookie_ciphertext"):
+                ciphertext = str(payload.account["cookie_ciphertext"])
+                try:
+                    decrypt_cookie(ciphertext, app_settings.secret_key)
+                except ValueError as exc:
+                    raise ValueError("配置文件中的 Cookie 无法用当前 APP_SECRET_KEY 解密") from exc
+                app_db.restore_cookie(
+                    ciphertext,
+                    payload.account.get("imported_at"),
+                )
+            if payload.topics:
+                new_rows = []
+                enabled_keys = []
+                for topic in payload.topics:
+                    topic_key = str(topic.get("topic_key") or "").strip()
+                    name = str(topic.get("name") or "").strip()
+                    if not topic_key or len(topic_key) > 512 or not name:
+                        raise ValueError("配置文件中存在无效的超话记录")
+                    if app_db.get_topic(topic_key) is None:
+                        new_rows.append(
+                            {
+                                "topic_key": topic_key,
+                                "name": name,
+                                "description": str(topic.get("description") or ""),
+                                "remote_status": "unknown",
+                                "checkin_scheme": None,
+                            }
+                        )
+                    if topic.get("enabled"):
+                        enabled_keys.append(topic_key)
+                if new_rows:
+                    app_db.upsert_topics(new_rows)
+                app_db.set_topics_enabled(enabled_keys, True)
+                imported_topics = len(payload.topics)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        qq_listener.wake()
+        return {"ok": True, "topics": imported_topics}
+
     @app.post("/api/notifications/test", dependencies=[Depends(require_csrf)])
     async def test_notification():
         try:
@@ -460,8 +607,6 @@ def _decrypt_account_cookie(db: Database, settings: Settings) -> str:
 
 
 async def _run_sync(function: Any, *args: Any) -> Any:
-    import asyncio
-
     return await asyncio.to_thread(function, *args)
 
 

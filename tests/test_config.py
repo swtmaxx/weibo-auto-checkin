@@ -69,3 +69,20 @@ def test_persisted_policy_takes_precedence_over_environment_defaults(tmp_path: P
     policy, _ = RuntimeState(database, settings).snapshot()
     assert policy.checkin_delay_seconds == 7
     assert policy.max_topics_per_run == 2
+
+
+def test_set_cooldown_survives_invalid_timezone(tmp_path: Path):
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+        timezone="Not/ARealZone",
+    )
+    state = RuntimeState(Database(settings.db_path), settings)
+
+    status = state.set_cooldown("微博返回 HTTP 429")
+
+    assert status["active"] is True
+    assert status["until"]  # UTC fallback still produces a deadline
+    state.clear_cooldown()
+    assert state.cooldown_status()["active"] is False

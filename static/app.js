@@ -6,6 +6,7 @@
   let toastTimer = null;
   let pollTimer = null;
   let lastRunId = null;
+  let allTopics = [];
   let storedClientSecretConfigured = false;
   let autoFilledOpenid = "";
 
@@ -125,7 +126,17 @@
 
   function formatDate(value) {
     if (!value) return "-";
-    return value.replace("T", " ").replace("+00:00", " UTC");
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    });
   }
 
   function accountBadge(account) {
@@ -162,18 +173,36 @@
     return map[status] || map.unknown;
   }
 
+  function applyTopicFilters(topics) {
+    const search = $("#topic-search");
+    const statusSelect = $("#topic-status-filter");
+    const query = search ? search.value.trim().toLowerCase() : "";
+    const status = statusSelect ? statusSelect.value : "all";
+    return topics.filter((topic) => {
+      if (status !== "all" && topic.remote_status !== status) return false;
+      if (!query) return true;
+      const haystack = (topic.name + " " + (topic.description || "")).toLowerCase();
+      return haystack.includes(query);
+    });
+  }
+
   function renderTopics(topics) {
     const body = $("#topics-body");
     body.replaceChildren();
-    $("#topic-count").textContent = String(topics.length);
-    const selected = topics.filter((topic) => topic.enabled).length;
+    $("#topic-count").textContent = String(allTopics.length);
+    const selected = allTopics.filter((topic) => topic.enabled).length;
     $("#selected-count").textContent = selected + " 个已启用";
+    const filteredNote = $("#topic-filtered-count");
+    if (filteredNote) {
+      filteredNote.textContent =
+        topics.length === allTopics.length ? "" : "筛选出 " + topics.length + " 个";
+    }
     if (!topics.length) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
       cell.colSpan = 4;
       cell.className = "empty-cell";
-      cell.textContent = "尚未同步超话列表";
+      cell.textContent = allTopics.length ? "没有匹配的超话" : "尚未同步超话列表";
       row.appendChild(cell);
       body.appendChild(row);
       return;
@@ -202,6 +231,22 @@
 
       const actionCell = document.createElement("td");
       actionCell.className = "align-right";
+      if (topic.checkin_scheme && topic.remote_status !== "signed") {
+        const checkinOne = document.createElement("button");
+        checkinOne.className = "button button-secondary button-small topic-checkin";
+        checkinOne.type = "button";
+        checkinOne.textContent = "签到";
+        checkinOne.addEventListener("click", async () => {
+          await startTask(
+            "/api/topics/" + encodeURIComponent(topic.topic_key) + "/checkin",
+            "签到",
+            checkinOne,
+            "…"
+          );
+          await loadTopics().catch(() => {});
+        });
+        actionCell.appendChild(checkinOne);
+      }
       const toggle = document.createElement("input");
       toggle.type = "checkbox";
       toggle.className = "topic-toggle";
@@ -231,7 +276,50 @@
 
   async function loadTopics() {
     const data = await request("/api/topics");
-    renderTopics(data.topics || []);
+    allTopics = data.topics || [];
+    renderTopics(applyTopicFilters(allTopics));
+  }
+
+  async function bulkTopics(enabled) {
+    const topics = applyTopicFilters(allTopics);
+    if (!topics.length) {
+      showToast("没有匹配的超话", true);
+      return;
+    }
+    const action = enabled ? "启用" : "停用";
+    if (!window.confirm("确定" + action + "筛选出的 " + topics.length + " 个超话？")) return;
+    try {
+      const data = await request("/api/topics/bulk", {
+        method: "POST",
+        body: {
+          enabled: enabled,
+          topic_keys: topics.map((topic) => topic.topic_key)
+        }
+      });
+      showToast("已" + action + " " + (data.updated || 0) + " 个超话", false);
+      await loadTopics();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+  }
+
+  async function loadStats() {
+    const rate = $("#stat-success-rate");
+    const count = $("#stat-success-count");
+    const streak = $("#stat-streak");
+    if (!rate || !count || !streak) return;
+    try {
+      const data = await request("/api/stats");
+      rate.textContent =
+        data.success_rate == null ? "—" : Math.round(data.success_rate * 100) + "%";
+      count.textContent = String((data.success || 0) + (data.already || 0));
+      streak.textContent = (data.streak_days || 0) + " 天";
+    } catch (err) {
+      rate.textContent = "—";
+      count.textContent = "—";
+      streak.textContent = "—";
+      throw err;
+    }
   }
 
   function renderLogs(logs) {
@@ -309,6 +397,7 @@
       }, 1400);
     } else if (lastRunId) {
       await loadHistory();
+      await loadTopics().catch(() => {});
     }
   }
 
@@ -645,6 +734,42 @@
       $("#qq-client-secret").disabled = event.target.checked;
       if (event.target.checked) $("#qq-client-secret").value = "";
     });
+    $("#export-config-button").addEventListener("click", async () => {
+      try {
+        const data = await request("/api/config/export");
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "weibo-checkin-config-" + new Date().toISOString().slice(0, 10) + ".json";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+        showToast("配置已导出，请妥善保管该文件", false);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+    $("#import-config-button").addEventListener("click", () => $("#import-config-file").click());
+    $("#import-config-file").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      try {
+        const parsed = JSON.parse(await file.text());
+        if (!window.confirm("导入将覆盖现有的运行设置、每日计划和超话启用状态，继续？")) return;
+        const data = await request("/api/config/import", {
+          method: "POST",
+          body: parsed
+        });
+        showToast("配置已导入：超话 " + (data.topics || 0) + " 个", false);
+        await loadSettings();
+      } catch (err) {
+        showToast(err instanceof SyntaxError ? "配置文件不是有效的 JSON" : err.message, true);
+      } finally {
+        event.target.value = "";
+      }
+    });
     $("#logout-button").addEventListener("click", async () => {
       try {
         await request("/api/auth/logout", { method: "POST" });
@@ -660,8 +785,7 @@
     window.setInterval(refreshQQOpenids, 5000);
   }
 
-  async function startTask(endpoint, label, buttonSelector, workingLabel) {
-    const button = $(buttonSelector);
+  async function startTask(endpoint, label, button, workingLabel) {
     if (button) {
       button.disabled = true;
       button.classList.add("is-loading");
@@ -685,7 +809,7 @@
   async function loadDashboard() {
     const status = await request("/api/status");
     csrf.value = status.csrf_token;
-    await Promise.all([loadAccount(), loadTopics(), loadSchedule(), loadHistory(), loadCurrentTask()]);
+    await Promise.all([loadAccount(), loadTopics(), loadSchedule(), loadHistory(), loadCurrentTask(), loadStats().catch((err) => showToast(err.message, true))]);
   }
 
   function bindDashboard() {
@@ -726,8 +850,15 @@
         showToast(err.message, true);
       }
     });
-    $("#sync-button").addEventListener("click", () => startTask("/api/topics/sync", "同步超话", "#sync-button", "同步中…"));
-    $("#checkin-button").addEventListener("click", () => startTask("/api/tasks/checkin", "立即签到", "#checkin-button", "签到中…"));
+    $("#sync-button").addEventListener("click", () => startTask("/api/topics/sync", "同步超话", $("#sync-button"), "同步中…"));
+    $("#checkin-button").addEventListener("click", () => startTask("/api/tasks/checkin", "立即签到", $("#checkin-button"), "签到中…"));
+    const topicSearch = $("#topic-search");
+    if (topicSearch) {
+      topicSearch.addEventListener("input", () => renderTopics(applyTopicFilters(allTopics)));
+      $("#topic-status-filter").addEventListener("change", () => renderTopics(applyTopicFilters(allTopics)));
+      $("#topics-enable-all").addEventListener("click", () => bulkTopics(true));
+      $("#topics-disable-all").addEventListener("click", () => bulkTopics(false));
+    }
     $("#cancel-button").addEventListener("click", async () => {
       const button = $("#cancel-button");
       button.disabled = true;

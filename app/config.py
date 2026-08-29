@@ -39,6 +39,8 @@ class Settings:
     checkin_delay_seconds: float = 10.0
     scheduler_poll_seconds: float = 15.0
     session_max_age: int = 60 * 60 * 24 * 30
+    history_retention_days: int = 90
+    schedule_catch_up: bool = True
 
     @classmethod
     def from_env(cls, base_dir: Path | None = None) -> "Settings":
@@ -79,6 +81,8 @@ class Settings:
             timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai"),
             checkin_delay_seconds=max(0.0, float(os.getenv("APP_CHECKIN_DELAY_SECONDS", "10.0"))),
             scheduler_poll_seconds=max(1.0, float(os.getenv("APP_SCHEDULER_POLL_SECONDS", "15"))),
+            history_retention_days=max(0, int(os.getenv("APP_HISTORY_RETENTION_DAYS", "90"))),
+            schedule_catch_up=_env_bool("APP_SCHEDULE_CATCH_UP", True),
         )
 
 
@@ -211,15 +215,21 @@ class RuntimeState:
         self.database = database
         self.settings = settings
         self._lock = threading.RLock()
-        fallback = RuntimePolicy.defaults(settings)
-        stored_policy = database.get_json_config(RUNTIME_SETTINGS_KEY) or {}
+        self.reload()
+
+    def reload(self) -> None:
+        """Re-read policy and notification settings from the database."""
+        fallback = RuntimePolicy.defaults(self.settings)
+        stored_policy = self.database.get_json_config(RUNTIME_SETTINGS_KEY) or {}
         try:
-            self._policy = RuntimePolicy.from_mapping(stored_policy, fallback=fallback)
+            policy = RuntimePolicy.from_mapping(stored_policy, fallback=fallback)
         except ValueError:
             logger.warning("Invalid persisted runtime settings; using safe defaults")
-            self._policy = fallback
-
-        self._notification = self._load_notification()
+            policy = fallback
+        notification = self._load_notification()
+        with self._lock:
+            self._policy = policy
+            self._notification = notification
 
     def _load_notification(self) -> NotificationSettings:
         stored = self.database.get_json_config(NOTIFICATION_SETTINGS_KEY) or {}
@@ -283,6 +293,19 @@ class RuntimeState:
         notification = NotificationSettings()
         self.save(policy, notification)
 
+    def import_policy(self, policy: RuntimePolicy) -> None:
+        """Replace the stored policy with one validated by the caller."""
+        policy.validate()
+        self.database.set_json_config(RUNTIME_SETTINGS_KEY, policy.to_dict())
+        with self._lock:
+            self._policy = policy
+
+    def import_notification_raw(self, raw: dict[str, Any]) -> None:
+        """Store a raw notification settings dict (from a backup) and re-read it."""
+        self.database.set_json_config(NOTIFICATION_SETTINGS_KEY, raw)
+        with self._lock:
+            self._notification = self._load_notification()
+
     def cooldown_status(self) -> dict[str, Any]:
         with self._lock:
             until = self.database.get_config(COOLDOWN_UNTIL_KEY)
@@ -305,7 +328,8 @@ class RuntimeState:
         try:
             zone = ZoneInfo(self.settings.timezone)
         except Exception:
-            zone = ZoneInfo("Asia/Shanghai")
+            # The fallback must never raise, or risk handling in TaskManager._worker dies.
+            zone = timezone.utc
         now = datetime.now(zone)
         next_day = now.date() + timedelta(days=1)
         local_midnight = datetime.combine(next_day, time.min, tzinfo=zone)

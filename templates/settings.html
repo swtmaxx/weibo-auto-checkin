@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>微博超话签到 · 设置</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <meta name="theme-color" content="#f3f5f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e141b" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="dashboard-page settings-page">
@@ -39,7 +42,7 @@
     </section>
 
     <form id="settings-form" class="settings-grid">
-      <section class="panel settings-panel span-2">
+      <section class="panel settings-panel policy-panel">
         <div class="panel-header">
           <div>
             <p class="eyebrow">CHECK-IN POLICY</p>
@@ -88,7 +91,7 @@
         <div id="cooldown-detail" class="notice notice-neutral">当前没有冷却。</div>
       </section>
 
-      <section class="panel settings-panel">
+      <section class="panel settings-panel qq-panel">
         <div class="panel-header">
           <div>
             <p class="eyebrow">QQ BOT</p>
@@ -96,58 +99,63 @@
           </div>
           <span id="notification-badge" class="badge badge-neutral">未配置</span>
         </div>
-        <div class="stack">
-          <label class="toggle-row setting-toggle">
-            <span>
-              <strong>启用 QQ 通知</strong>
-              <small>发送任务汇总，不包含 Cookie</small>
-            </span>
-            <input id="notifications-enabled" type="checkbox">
-          </label>
-          <label>
-            AppID
-            <input id="qq-app-id" type="text" maxlength="128" autocomplete="off">
-          </label>
-          <label>
-            user_openid
-            <input id="qq-user-openid" type="text" maxlength="256" autocomplete="off">
-          </label>
-          <label>
-            ClientSecret
-            <input id="qq-client-secret" type="password" maxlength="512" autocomplete="new-password" placeholder="已配置时留空即可保留">
-          </label>
-          <div class="discovery-row">
-            <button id="discover-openid-button" class="button button-secondary" type="button">开始发现 OpenID</button>
-            <small>保存 AppID 和密钥后，给机器人发一条私聊，页面会自动填入 OpenID。</small>
-          </div>
-          <label class="check-row">
-            <input id="clear-client-secret" type="checkbox">
-            <span>清除已保存的 ClientSecret</span>
-          </label>
-          <label class="toggle-row setting-toggle">
-            <span>
-              <strong>发现后持续监听</strong>
-              <small>持续接收 C2C 私聊事件，不保存消息正文</small>
-            </span>
-            <input id="listen-events" type="checkbox">
-          </label>
-          <div id="qq-listener-status" class="notice notice-neutral">监听未启用。</div>
-          <div class="notice notice-neutral">请先在 QQ 开放平台开通 C2C/PUBLIC_MESSAGES 权限，再给机器人发送一条私聊消息。</div>
-          <div>
-            <div class="subsection-label">最近发现的 user_openid</div>
-            <div id="qq-openid-list" class="openid-list">
-              <div class="muted">尚未发现 OpenID。</div>
+        <div class="qq-grid">
+          <div class="stack">
+            <label class="toggle-row setting-toggle">
+              <span>
+                <strong>启用 QQ 通知</strong>
+                <small>发送任务汇总，不包含 Cookie</small>
+              </span>
+              <input id="notifications-enabled" type="checkbox">
+            </label>
+            <label>
+              AppID
+              <input id="qq-app-id" type="text" maxlength="128" autocomplete="off" placeholder="QQ 开放平台的 AppID">
+            </label>
+            <label>
+              user_openid
+              <input id="qq-user-openid" type="text" maxlength="256" autocomplete="off" placeholder="接收通知的目标用户">
+            </label>
+            <label>
+              ClientSecret
+              <input id="qq-client-secret" type="password" maxlength="512" autocomplete="new-password" placeholder="已配置时留空即可保留">
+            </label>
+            <label class="check-row">
+              <input id="clear-client-secret" type="checkbox">
+              <span>清除已保存的 ClientSecret</span>
+            </label>
+            <div class="notification-events">
+              <span class="muted">通知事件</span>
+              <label class="check-row"><input id="notify-completed" type="checkbox"><span>任务完成</span></label>
+              <label class="check-row"><input id="notify-failed" type="checkbox"><span>任务失败</span></label>
+              <label class="check-row"><input id="notify-risk" type="checkbox"><span>403/429 风控</span></label>
             </div>
           </div>
-          <div class="inline-actions settings-actions">
-            <button id="test-notification-button" class="button button-secondary" type="button">发送测试通知</button>
+          <div class="stack">
+            <div class="notice notice-neutral">
+              请先在 QQ 开放平台开通 C2C/PUBLIC_MESSAGES 权限，再给机器人发送一条私聊消息。
+            </div>
+            <div class="discovery-row">
+              <button id="discover-openid-button" class="button button-secondary" type="button">开始发现 OpenID</button>
+            </div>
+            <label class="toggle-row setting-toggle">
+              <span>
+                <strong>发现后持续监听</strong>
+                <small>持续接收 C2C 私聊事件，不保存消息正文</small>
+              </span>
+              <input id="listen-events" type="checkbox">
+            </label>
+            <div id="qq-listener-status" class="notice notice-neutral">监听未启用。</div>
+            <div>
+              <div class="subsection-label">最近发现的 user_openid</div>
+              <div id="qq-openid-list" class="openid-list">
+                <div class="muted">尚未发现 OpenID。</div>
+              </div>
+            </div>
+            <div class="inline-actions settings-actions">
+              <button id="test-notification-button" class="button button-secondary" type="button">发送测试通知</button>
+            </div>
           </div>
-        </div>
-        <div class="notification-events">
-          <span class="muted">通知事件</span>
-          <label class="check-row"><input id="notify-completed" type="checkbox"><span>任务完成</span></label>
-          <label class="check-row"><input id="notify-failed" type="checkbox"><span>任务失败</span></label>
-          <label class="check-row"><input id="notify-risk" type="checkbox"><span>403/429 风控</span></label>
         </div>
       </section>
 
@@ -167,7 +175,7 @@
           <label>
             新密码
             <input id="new-password" type="password" autocomplete="new-password" minlength="12" required form="password-form">
-            <small>至少 12 位</small>
+            <small>至少 12 位，修改成功后需要重新登录</small>
           </label>
           <label>
             确认新密码
@@ -178,9 +186,29 @@
           </div>
         </div>
       </section>
+      <section class="panel settings-panel migration-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">MIGRATION</p>
+            <h2>配置迁移</h2>
+          </div>
+        </div>
+        <div class="stack">
+          <p class="small-note muted">
+            导出文件包含加密后的 Cookie 与 QQ ClientSecret。导入时目标服务必须设置与导出时相同的
+            APP_SECRET_KEY，否则加密数据无法解密；导入会合并超话列表并覆盖运行设置。
+          </p>
+          <div class="inline-actions settings-actions">
+            <button id="export-config-button" class="button button-secondary" type="button">导出配置</button>
+            <button id="import-config-button" class="button button-secondary" type="button">导入配置</button>
+            <input id="import-config-file" type="file" accept="application/json,.json" class="visually-hidden" aria-hidden="true" tabindex="-1">
+          </div>
+        </div>
+      </section>
     </form>
     <form id="password-form" class="visually-hidden" aria-hidden="true"></form>
   </main>
+  <footer class="page-footer">微博超话签到 · 单账号自托管 · Cookie 仅加密存储</footer>
   <script src="/static/app.js"></script>
 </body>
 </html>
