@@ -85,6 +85,16 @@
             <input id="cooldown-hours" name="cooldown_hours" type="number" min="0" max="168" step="1" required>
             <small>填 0 表示冷却至次日零点</small>
           </label>
+          <label>
+            间隔抖动幅度（%）
+            <input id="delay-jitter" name="delay_jitter_percent" type="number" min="0" max="100" step="1" required>
+            <small>实际间隔 = 间隔 × 随机系数，0 表示固定间隔</small>
+          </label>
+          <label>
+            计划随机延迟（分钟）
+            <input id="schedule-jitter" name="schedule_jitter_minutes" type="number" min="0" max="120" step="1" required>
+            <small>到点后随机等待 0~N 分钟再执行，0 表示准点</small>
+          </label>
         </div>
         <label class="toggle-row setting-toggle">
           <span>

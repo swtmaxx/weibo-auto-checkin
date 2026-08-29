@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import sqlite3
 import time
 from dataclasses import replace
@@ -14,7 +15,7 @@ from app.config import RuntimePolicy, Settings, RuntimeState
 from app.db import Database, utc_now
 from app.main import create_app
 from app.security import LoginThrottle, decrypt_cookie, encrypt_cookie
-from app.tasks import Scheduler, TaskManager
+from app.tasks import Scheduler, TaskManager, jittered_delay
 from app.weibo import CheckinResult, LoginStatus
 
 
@@ -443,3 +444,43 @@ def test_clear_cooldown_endpoint(tmp_path: Path):
         assert response.status_code == 200
         assert response.json()["cooldown"]["active"] is False
         assert runtime_state.is_cooling_down() is False
+
+
+# ---------------------------------------------------------------------------
+# Random delays
+# ---------------------------------------------------------------------------
+
+
+def test_jittered_delay_zero_percent_is_exact():
+    assert jittered_delay(10.0, 0) == 10.0
+    assert jittered_delay(10.0, -5) == 10.0
+
+
+def test_jittered_delay_uses_symmetric_range(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(random, "uniform", lambda a, b: (seen.update(a=a, b=b), 0.9)[1])
+    assert jittered_delay(10.0, 25) == 9.0
+    assert (seen["a"], seen["b"]) == (0.75, 1.25)
+
+
+def test_scheduler_jittered_fire_time(monkeypatch):
+    zone = ZoneInfo("Asia/Shanghai")
+    now = datetime(2026, 8, 29, 8, 0, tzinfo=zone)
+    monkeypatch.setattr(random, "uniform", lambda a, b: 300.0)
+    fire_at = Scheduler.jittered_fire_time(now, "09:00", 10)
+    assert fire_at == datetime(2026, 8, 29, 9, 5, tzinfo=zone)
+
+
+def test_policy_rejects_out_of_range_random_delays(tmp_path: Path):
+    state = make_runtime_state(tmp_path)
+    policy, _ = state.snapshot()
+    for field, value, keyword in (
+        ("delay_jitter_percent", 150, "抖动"),
+        ("schedule_jitter_minutes", 500, "随机延迟"),
+    ):
+        try:
+            RuntimePolicy.from_mapping({field: value}, fallback=policy)
+        except ValueError as exc:
+            assert keyword in str(exc)
+        else:
+            raise AssertionError(f"{field}={value} should be rejected")

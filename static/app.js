@@ -581,6 +581,7 @@
     const policy = data.runtime || {};
     const notification = data.notifications || {};
     $("#checkin-delay").value = policy.checkin_delay_seconds;
+    $("#delay-jitter").value = policy.delay_jitter_percent;
     $("#max-topics").value = policy.max_topics_per_run;
     $("#max-failures").value = policy.max_consecutive_failures;
     $("#request-timeout").value = policy.request_timeout_seconds;
@@ -597,6 +598,7 @@
     $("#notify-failed").checked = Boolean(notification.notify_failed);
     $("#notify-risk").checked = Boolean(notification.notify_risk);
     $("#listen-events").checked = Boolean(notification.listen_events);
+    $("#schedule-jitter").value = policy.schedule_jitter_minutes;
     renderCooldown(data.cooldown || {});
     renderNotificationState(notification);
     renderQQListenerState(data.qq_listener || {});
@@ -607,12 +609,14 @@
     return {
       runtime: {
         checkin_delay_seconds: Number($("#checkin-delay").value),
+        delay_jitter_percent: Number($("#delay-jitter").value),
         max_topics_per_run: Number($("#max-topics").value),
         max_consecutive_failures: Number($("#max-failures").value),
         request_timeout_seconds: Number($("#request-timeout").value),
         read_retry_count: Number($("#read-retries").value),
         cooldown_on_rate_limit: $("#cooldown-enabled").checked,
-        cooldown_hours: Number($("#cooldown-hours").value)
+        cooldown_hours: Number($("#cooldown-hours").value),
+        schedule_jitter_minutes: Number($("#schedule-jitter").value)
       },
       notifications: {
         enabled: $("#notifications-enabled").checked,

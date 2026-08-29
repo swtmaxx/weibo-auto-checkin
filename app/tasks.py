@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, Callable
 
@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 TASK_KINDS = {"sync", "checkin", "scheduled", "single"}
 COOLDOWN_KINDS = {"checkin", "scheduled", "single"}
+
+
+def jittered_delay(base_seconds: float, jitter_percent: int) -> float:
+    """Base wait scaled by a symmetric random factor (0 percent = exact wait)."""
+    if jitter_percent <= 0:
+        return base_seconds
+    factor = max(0, min(100, jitter_percent)) / 100.0
+    return base_seconds * random.uniform(1.0 - factor, 1.0 + factor)
 
 
 class RunBusyError(RuntimeError):
@@ -410,7 +418,7 @@ class TaskManager:
                     summary["stopped_reason"] = "连续失败达到阈值"
                     break
             if index < len(selected):
-                delay = policy.checkin_delay_seconds * random.uniform(0.75, 1.25)
+                delay = jittered_delay(policy.checkin_delay_seconds, policy.delay_jitter_percent)
                 cancel_event.wait(delay)
         summary["cancelled"] = cancel_event.is_set()
         return summary
@@ -461,6 +469,7 @@ class Scheduler:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_prune_date: str | None = None
+        self._jitter_plan: tuple[str, str, int, datetime] | None = None
 
     @staticmethod
     def should_fire(
@@ -475,6 +484,21 @@ class Scheduler:
         if catch_up:
             return now_hhmm >= run_time
         return now_hhmm == run_time
+
+    @staticmethod
+    def jittered_fire_time(now: datetime, run_time: str, jitter_minutes: float) -> datetime:
+        """Scheduled moment pushed forward by a random 0..N minutes (same tz as now)."""
+        hour, minute = (int(part) for part in run_time.split(":", 1))
+        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        delay = random.uniform(0.0, max(0.0, jitter_minutes) * 60.0)
+        return scheduled + timedelta(seconds=delay)
+
+    def _schedule_jitter_minutes(self) -> int:
+        runtime_state = getattr(self.manager, "runtime_state", None)
+        if runtime_state is None:
+            return 0
+        policy, _ = runtime_state.snapshot()
+        return max(0, policy.schedule_jitter_minutes)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -498,22 +522,39 @@ class Scheduler:
                 schedule = self.db.get_schedule()
                 now = datetime.now(zone)
                 today = now.date().isoformat()
-                if (
-                    schedule["enabled"]
-                    and self.should_fire(
-                        now.strftime("%H:%M"),
-                        schedule["run_time"],
-                        schedule["last_run_date"],
-                        today,
-                        self.settings.schedule_catch_up,
-                    )
+                should = schedule["enabled"] and self.should_fire(
+                    now.strftime("%H:%M"),
+                    schedule["run_time"],
+                    schedule["last_run_date"],
+                    today,
+                    self.settings.schedule_catch_up,
+                )
+                jitter_minutes = self._schedule_jitter_minutes()
+                plan = self._jitter_plan
+                if plan and (
+                    plan[0] != today
+                    or plan[1] != schedule["run_time"]
+                    or plan[2] != jitter_minutes
                 ):
+                    plan = None
+                if should and jitter_minutes > 0:
+                    if plan is None:
+                        plan = (
+                            today,
+                            schedule["run_time"],
+                            jitter_minutes,
+                            self.jittered_fire_time(now, schedule["run_time"], jitter_minutes),
+                        )
+                        self._jitter_plan = plan
+                    should = now >= plan[3]
+                if should:
                     try:
                         self.manager.start("scheduled")
                     except RunBusyError:
                         pass
                     else:
                         self.db.mark_schedule_run(today)
+                        self._jitter_plan = None
                 if (
                     self.settings.history_retention_days
                     and self._last_prune_date != today

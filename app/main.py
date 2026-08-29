@@ -72,12 +72,14 @@ class SchedulePayload(BaseModel):
 
 class RuntimePolicyPayload(BaseModel):
     checkin_delay_seconds: float = Field(ge=3, le=60)
+    delay_jitter_percent: int = Field(default=25, ge=0, le=100)
     max_topics_per_run: int = Field(ge=0, le=10000)
     max_consecutive_failures: int = Field(ge=0, le=100)
     request_timeout_seconds: float = Field(ge=5, le=60)
     read_retry_count: int = Field(ge=0, le=2)
     cooldown_on_rate_limit: bool
     cooldown_hours: int = Field(default=0, ge=0, le=168)
+    schedule_jitter_minutes: int = Field(default=0, ge=0, le=120)
 
 
 class NotificationPayload(BaseModel):

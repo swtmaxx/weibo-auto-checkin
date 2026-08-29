@@ -113,7 +113,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `APP_PORT` | `8000` | 监听端口 |
 | `APP_COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
 | `APP_TIMEZONE` | `Asia/Shanghai` | 调度使用的时区 |
-| `APP_CHECKIN_DELAY_SECONDS` | `10.0` | 两次签到请求之间的间隔（实际按 ±25% 随机抖动执行）；WebUI 保存的值优先 |
+| `APP_CHECKIN_DELAY_SECONDS` | `10.0` | 两次签到请求之间的基准间隔；实际按抖动幅度随机执行 | 
+| `APP_DELAY_JITTER_PERCENT` | `25` | 间隔抖动幅度（%）：实际间隔 = 基准间隔 × (1±幅度)，`0` 表示固定间隔（WebUI 保存的值优先） |
 | `APP_MAX_TOPICS_PER_RUN` | `0` | 单次最多处理的超话数量，0 表示不限制 |
 | `APP_MAX_CONSECUTIVE_FAILURES` | `3` | 连续失败后停止，0 表示不启用 |
 | `APP_REQUEST_TIMEOUT_SECONDS` | `15` | 微博请求超时秒数 |
@@ -122,6 +123,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `APP_COOLDOWN_HOURS` | `0` | 冷却时长：`0` 表示至次日零点，`1-168` 表示固定小时数（WebUI 保存的值优先） |
 | `APP_HISTORY_RETENTION_DAYS` | `90` | 任务记录保留天数，超期自动清理，`0` 表示不清理 |
 | `APP_SCHEDULE_CATCH_UP` | `true` | 错过执行时间后当天是否补跑；`false` 时仅在计划分钟内执行 |
+| `APP_SCHEDULE_JITTER_MINUTES` | `0` | 每日计划到点后随机等待 0~N 分钟再执行，`0` 表示准点（WebUI 保存的值优先） |
 
 > [!NOTE]
 > WebUI 保存的运行配置位于 SQLite 中，并优先于环境变量。恢复默认会重新使用当前环境变量提供的默认值，同时清除 QQ 通知凭证。QQ ClientSecret 以 `APP_SECRET_KEY` 加密保存，接口不会回显密钥；页面中留空表示保留原值。

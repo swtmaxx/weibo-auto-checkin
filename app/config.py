@@ -89,17 +89,20 @@ class Settings:
 @dataclass(frozen=True)
 class RuntimePolicy:
     checkin_delay_seconds: float = 10.0
+    delay_jitter_percent: int = 25
     max_topics_per_run: int = 0
     max_consecutive_failures: int = 3
     request_timeout_seconds: float = 15.0
     read_retry_count: int = 1
     cooldown_on_rate_limit: bool = True
     cooldown_hours: int = 0
+    schedule_jitter_minutes: int = 0
 
     @classmethod
     def defaults(cls, settings: Settings) -> "RuntimePolicy":
         return cls(
             checkin_delay_seconds=max(3.0, min(60.0, settings.checkin_delay_seconds or 10.0)),
+            delay_jitter_percent=max(0, min(100, int(os.getenv("APP_DELAY_JITTER_PERCENT", "25")))),
             max_topics_per_run=max(0, int(os.getenv("APP_MAX_TOPICS_PER_RUN", "0"))),
             max_consecutive_failures=max(0, int(os.getenv("APP_MAX_CONSECUTIVE_FAILURES", "3"))),
             request_timeout_seconds=max(
@@ -109,6 +112,9 @@ class RuntimePolicy:
             read_retry_count=max(0, min(2, int(os.getenv("APP_READ_RETRY_COUNT", "1")))),
             cooldown_on_rate_limit=_env_bool("APP_COOLDOWN_ON_RATE_LIMIT", True),
             cooldown_hours=max(0, min(168, int(os.getenv("APP_COOLDOWN_HOURS", "0")))),
+            schedule_jitter_minutes=max(
+                0, min(120, int(os.getenv("APP_SCHEDULE_JITTER_MINUTES", "0")))
+            ),
         )
 
     @classmethod
@@ -121,6 +127,9 @@ class RuntimePolicy:
         values = {
             "checkin_delay_seconds": mapping.get(
                 "checkin_delay_seconds", fallback.checkin_delay_seconds
+            ),
+            "delay_jitter_percent": mapping.get(
+                "delay_jitter_percent", fallback.delay_jitter_percent
             ),
             "max_topics_per_run": mapping.get(
                 "max_topics_per_run", fallback.max_topics_per_run
@@ -136,16 +145,21 @@ class RuntimePolicy:
                 "cooldown_on_rate_limit", fallback.cooldown_on_rate_limit
             ),
             "cooldown_hours": mapping.get("cooldown_hours", fallback.cooldown_hours),
+            "schedule_jitter_minutes": mapping.get(
+                "schedule_jitter_minutes", fallback.schedule_jitter_minutes
+            ),
         }
         try:
             policy = cls(
                 checkin_delay_seconds=float(values["checkin_delay_seconds"]),
+                delay_jitter_percent=int(values["delay_jitter_percent"]),
                 max_topics_per_run=int(values["max_topics_per_run"]),
                 max_consecutive_failures=int(values["max_consecutive_failures"]),
                 request_timeout_seconds=float(values["request_timeout_seconds"]),
                 read_retry_count=int(values["read_retry_count"]),
                 cooldown_on_rate_limit=bool(values["cooldown_on_rate_limit"]),
                 cooldown_hours=int(values["cooldown_hours"]),
+                schedule_jitter_minutes=int(values["schedule_jitter_minutes"]),
             )
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("运行配置格式错误") from exc
@@ -155,6 +169,8 @@ class RuntimePolicy:
     def validate(self) -> None:
         if not 3.0 <= self.checkin_delay_seconds <= 60.0:
             raise ValueError("签到间隔必须在 3-60 秒之间")
+        if self.delay_jitter_percent < 0 or self.delay_jitter_percent > 100:
+            raise ValueError("间隔抖动幅度必须在 0-100% 之间")
         if self.max_topics_per_run < 0 or self.max_topics_per_run > 10000:
             raise ValueError("单次超话上限必须在 0-10000 之间")
         if self.max_consecutive_failures < 0 or self.max_consecutive_failures > 100:
@@ -165,6 +181,8 @@ class RuntimePolicy:
             raise ValueError("读取接口重试次数必须在 0-2 次之间")
         if self.cooldown_hours < 0 or self.cooldown_hours > 168:
             raise ValueError("冷却时长必须在 0-168 小时之间")
+        if self.schedule_jitter_minutes < 0 or self.schedule_jitter_minutes > 120:
+            raise ValueError("计划随机延迟必须在 0-120 分钟之间")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
