@@ -32,7 +32,7 @@
 - 工作台展示近 7 天成功率、成功签到次数和连续签到天数
 - 按 `Asia/Shanghai` 时间每天自动签到
 - 配置中心：签到间隔、单次上限、连续失败停止、请求超时和读取重试
-- 403/429 触发保护后自动冷却至次日零点
+- 403/429 触发保护后自动冷却（默认至次日零点，可配置固定时长），设置页可手动解除
 - 历史记录自动清理：默认保留 90 天，可通过 `APP_HISTORY_RETENTION_DAYS` 调整
 
 **QQ 私聊通知**
@@ -118,7 +118,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `APP_MAX_CONSECUTIVE_FAILURES` | `3` | 连续失败后停止，0 表示不启用 |
 | `APP_REQUEST_TIMEOUT_SECONDS` | `15` | 微博请求超时秒数 |
 | `APP_READ_RETRY_COUNT` | `1` | 读取接口最多重试 0-2 次，签到请求不重试 |
-| `APP_COOLDOWN_ON_RATE_LIMIT` | `true` | 403/429 后是否冷却至次日零点 |
+| `APP_COOLDOWN_ON_RATE_LIMIT` | `true` | 403/429 后是否冷却 |
+| `APP_COOLDOWN_HOURS` | `0` | 冷却时长：`0` 表示至次日零点，`1-168` 表示固定小时数（WebUI 保存的值优先） |
 | `APP_HISTORY_RETENTION_DAYS` | `90` | 任务记录保留天数，超期自动清理，`0` 表示不清理 |
 | `APP_SCHEDULE_CATCH_UP` | `true` | 错过执行时间后当天是否补跑；`false` 时仅在计划分钟内执行 |
 

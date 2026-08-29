@@ -77,6 +77,7 @@ class RuntimePolicyPayload(BaseModel):
     request_timeout_seconds: float = Field(ge=5, le=60)
     read_retry_count: int = Field(ge=0, le=2)
     cooldown_on_rate_limit: bool
+    cooldown_hours: int = Field(default=0, ge=0, le=168)
 
 
 class NotificationPayload(BaseModel):
@@ -476,6 +477,11 @@ def create_app(
     async def reset_settings():
         runtime_state.reset()
         qq_listener.wake()
+        return await get_settings()
+
+    @app.post("/api/cooldown/clear", dependencies=[Depends(require_csrf)])
+    async def clear_cooldown():
+        runtime_state.clear_cooldown()
         return await get_settings()
 
     @app.get("/api/qq/openids", dependencies=[Depends(require_auth)])

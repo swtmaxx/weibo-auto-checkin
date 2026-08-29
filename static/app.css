@@ -960,6 +960,10 @@ input[type="checkbox"]:disabled {
   margin-top: 13px;
 }
 
+.cooldown-actions {
+  margin-top: 8px;
+}
+
 .check-row {
   display: flex;
   grid-template-columns: none;

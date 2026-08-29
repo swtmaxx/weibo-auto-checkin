@@ -94,6 +94,7 @@ class RuntimePolicy:
     request_timeout_seconds: float = 15.0
     read_retry_count: int = 1
     cooldown_on_rate_limit: bool = True
+    cooldown_hours: int = 0
 
     @classmethod
     def defaults(cls, settings: Settings) -> "RuntimePolicy":
@@ -107,6 +108,7 @@ class RuntimePolicy:
             ),
             read_retry_count=max(0, min(2, int(os.getenv("APP_READ_RETRY_COUNT", "1")))),
             cooldown_on_rate_limit=_env_bool("APP_COOLDOWN_ON_RATE_LIMIT", True),
+            cooldown_hours=max(0, min(168, int(os.getenv("APP_COOLDOWN_HOURS", "0")))),
         )
 
     @classmethod
@@ -133,6 +135,7 @@ class RuntimePolicy:
             "cooldown_on_rate_limit": mapping.get(
                 "cooldown_on_rate_limit", fallback.cooldown_on_rate_limit
             ),
+            "cooldown_hours": mapping.get("cooldown_hours", fallback.cooldown_hours),
         }
         try:
             policy = cls(
@@ -142,6 +145,7 @@ class RuntimePolicy:
                 request_timeout_seconds=float(values["request_timeout_seconds"]),
                 read_retry_count=int(values["read_retry_count"]),
                 cooldown_on_rate_limit=bool(values["cooldown_on_rate_limit"]),
+                cooldown_hours=int(values["cooldown_hours"]),
             )
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("运行配置格式错误") from exc
@@ -159,6 +163,8 @@ class RuntimePolicy:
             raise ValueError("请求超时必须在 5-60 秒之间")
         if self.read_retry_count not in {0, 1, 2}:
             raise ValueError("读取接口重试次数必须在 0-2 次之间")
+        if self.cooldown_hours < 0 or self.cooldown_hours > 168:
+            raise ValueError("冷却时长必须在 0-168 小时之间")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -330,10 +336,17 @@ class RuntimeState:
         except Exception:
             # The fallback must never raise, or risk handling in TaskManager._worker dies.
             zone = timezone.utc
-        now = datetime.now(zone)
-        next_day = now.date() + timedelta(days=1)
-        local_midnight = datetime.combine(next_day, time.min, tzinfo=zone)
-        until = local_midnight.astimezone(timezone.utc).isoformat(timespec="seconds")
+        with self._lock:
+            cooldown_hours = self._policy.cooldown_hours
+        if cooldown_hours > 0:
+            until = (
+                datetime.now(timezone.utc) + timedelta(hours=cooldown_hours)
+            ).isoformat(timespec="seconds")
+        else:
+            now = datetime.now(zone)
+            next_day = now.date() + timedelta(days=1)
+            local_midnight = datetime.combine(next_day, time.min, tzinfo=zone)
+            until = local_midnight.astimezone(timezone.utc).isoformat(timespec="seconds")
         self.database.set_config(COOLDOWN_UNTIL_KEY, until)
         self.database.set_config(COOLDOWN_REASON_KEY, reason[:500])
         return self.cooldown_status()

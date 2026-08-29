@@ -80,6 +80,11 @@
             </select>
             <small>仅用于读取接口，签到请求不会自动重试</small>
           </label>
+          <label>
+            冷却时长（小时）
+            <input id="cooldown-hours" name="cooldown_hours" type="number" min="0" max="168" step="1" required>
+            <small>填 0 表示冷却至次日零点</small>
+          </label>
         </div>
         <label class="toggle-row setting-toggle">
           <span>
@@ -89,6 +94,9 @@
           <input id="cooldown-enabled" type="checkbox">
         </label>
         <div id="cooldown-detail" class="notice notice-neutral">当前没有冷却。</div>
+        <div class="inline-actions settings-actions cooldown-actions">
+          <button id="clear-cooldown-button" class="button button-danger-ghost button-small hidden" type="button">解除冷却</button>
+        </div>
       </section>
 
       <section class="panel settings-panel qq-panel">

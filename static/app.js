@@ -477,12 +477,15 @@
     const badge = $("#cooldown-badge");
     const detail = $("#cooldown-detail");
     if (!badge || !detail) return;
-    badge.className = "badge " + (cooldown && cooldown.active ? "badge-red" : "badge-green");
-    badge.textContent = cooldown && cooldown.active ? "冷却中" : "未冷却";
-    detail.className = "notice " + (cooldown && cooldown.active ? "notice-warning" : "notice-neutral");
-    detail.textContent = cooldown && cooldown.active
+    const active = Boolean(cooldown && cooldown.active);
+    badge.className = "badge " + (active ? "badge-red" : "badge-green");
+    badge.textContent = active ? "冷却中" : "未冷却";
+    detail.className = "notice " + (active ? "notice-warning" : "notice-neutral");
+    detail.textContent = active
       ? "已暂停签到，截止 " + formatDate(cooldown.until) + "。原因：" + (cooldown.reason || "微博返回限流或风控响应")
       : "当前没有冷却。";
+    const clearButton = $("#clear-cooldown-button");
+    if (clearButton) clearButton.classList.toggle("hidden", !active);
   }
 
   function renderNotificationState(notification) {
@@ -582,6 +585,7 @@
     $("#max-failures").value = policy.max_consecutive_failures;
     $("#request-timeout").value = policy.request_timeout_seconds;
     $("#read-retries").value = policy.read_retry_count;
+    $("#cooldown-hours").value = policy.cooldown_hours;
     $("#cooldown-enabled").checked = Boolean(policy.cooldown_on_rate_limit);
     $("#notifications-enabled").checked = Boolean(notification.enabled);
     $("#qq-app-id").value = notification.app_id || "";
@@ -607,7 +611,8 @@
         max_consecutive_failures: Number($("#max-failures").value),
         request_timeout_seconds: Number($("#request-timeout").value),
         read_retry_count: Number($("#read-retries").value),
-        cooldown_on_rate_limit: $("#cooldown-enabled").checked
+        cooldown_on_rate_limit: $("#cooldown-enabled").checked,
+        cooldown_hours: Number($("#cooldown-hours").value)
       },
       notifications: {
         enabled: $("#notifications-enabled").checked,
@@ -714,6 +719,16 @@
         renderNotificationState(data.notifications || {});
         await loadSettings();
         showToast("已恢复默认设置", false);
+      } catch (err) {
+        showToast(err.message, true);
+      }
+    });
+    $("#clear-cooldown-button").addEventListener("click", async () => {
+      if (!window.confirm("确定解除风控冷却？若微博风控尚未解除，签到可能再次触发限流。")) return;
+      try {
+        const data = await request("/api/cooldown/clear", { method: "POST" });
+        renderCooldown(data.cooldown || {});
+        showToast("已解除冷却", false);
       } catch (err) {
         showToast(err.message, true);
       }

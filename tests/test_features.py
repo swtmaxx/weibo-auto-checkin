@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
-from app.config import Settings
+from app.config import RuntimePolicy, Settings, RuntimeState
 from app.db import Database, utc_now
 from app.main import create_app
 from app.security import LoginThrottle, decrypt_cookie, encrypt_cookie
@@ -360,3 +361,85 @@ def test_config_import_rejects_bad_schedule(tmp_path: Path):
         )
         assert response.status_code == 422
         assert response.json()["detail"] == "配置文件中的执行时间格式错误"
+
+
+# ---------------------------------------------------------------------------
+# Cooldown configuration
+# ---------------------------------------------------------------------------
+
+
+def make_runtime_state(tmp_path: Path, **policy_overrides) -> RuntimeState:
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+    )
+    database = Database(settings.db_path)
+    state = RuntimeState(database, settings)
+    if policy_overrides:
+        policy, notification = state.snapshot()
+        state.save(replace(policy, **policy_overrides), notification)
+    return state
+
+
+def test_set_cooldown_next_midnight_by_default(tmp_path: Path):
+    state = make_runtime_state(tmp_path)
+    status = state.set_cooldown("429")
+    assert status["active"] is True
+    local_until = datetime.fromisoformat(status["until"]).astimezone(
+        ZoneInfo("Asia/Shanghai")
+    )
+    assert (local_until.hour, local_until.minute) == (0, 0)
+
+
+def test_set_cooldown_fixed_hours(tmp_path: Path):
+    state = make_runtime_state(tmp_path, cooldown_hours=2)
+    before = datetime.now(timezone.utc)
+    status = state.set_cooldown("429")
+    until = datetime.fromisoformat(status["until"])
+    delta = until - before
+    assert timedelta(hours=1, minutes=55) < delta < timedelta(hours=2, minutes=5)
+
+
+def test_policy_rejects_out_of_range_cooldown_hours(tmp_path: Path):
+    state = make_runtime_state(tmp_path)
+    policy, _ = state.snapshot()
+    try:
+        RuntimePolicy.from_mapping({"cooldown_hours": 500}, fallback=policy)
+    except ValueError as exc:
+        assert "冷却时长" in str(exc)
+    else:
+        raise AssertionError("cooldown_hours=500 should be rejected")
+
+
+def test_cooldown_hours_env_default(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("APP_COOLDOWN_HOURS", "6")
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+    )
+    assert RuntimePolicy.defaults(settings).cooldown_hours == 6
+
+
+def test_clear_cooldown_endpoint(tmp_path: Path):
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+    )
+    database = Database(settings.db_path)
+    with make_test_client(settings, database) as client:
+        csrf = setup_admin(client)
+        app = client.app
+        runtime_state = app.state.runtime_state
+        runtime_state.set_cooldown("429")
+        assert runtime_state.is_cooling_down() is True
+
+        response = client.post(
+            "/api/cooldown/clear",
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 200
+        assert response.json()["cooldown"]["active"] is False
+        assert runtime_state.is_cooling_down() is False
