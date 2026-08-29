@@ -10,8 +10,8 @@ from typing import Any, Callable
 from .config import RuntimePolicy, RuntimeState, Settings
 from .db import Database
 from .notifications import NotificationService
-from .security import decrypt_cookie, encrypt_cookie
-from .weibo import WeiboAuthError, WeiboClient, WeiboRiskError, merge_renewed_cookies
+from .security import decrypt_cookie
+from .weibo import WeiboAuthError, WeiboClient, WeiboRiskError
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +172,6 @@ class TaskManager:
 
             if kind == "single":
                 summary = self._run_single_checkin(client, topic_key, logger)
-                renewed = self._persist_renewed_cookies(client, cookie, logger)
-                if renewed:
-                    summary["renewed_cookies"] = renewed
                 status = "cancelled" if cancel_event.is_set() else "completed"
                 self.db.finish_run(run_id, status, summary)
                 return
@@ -186,17 +183,11 @@ class TaskManager:
 
             if kind == "sync":
                 summary = {"discovered": len(snapshots)}
-                renewed = self._persist_renewed_cookies(client, cookie, logger)
-                if renewed:
-                    summary["renewed_cookies"] = renewed
                 status = "cancelled" if cancel_event.is_set() else "completed"
                 self.db.finish_run(run_id, status, summary)
                 return
 
             summary = self._run_checkins(client, snapshots, cancel_event, logger, policy)
-            renewed = self._persist_renewed_cookies(client, cookie, logger)
-            if renewed:
-                summary["renewed_cookies"] = renewed
             status = "cancelled" if cancel_event.is_set() else "completed"
             self._notify(
                 logger,
@@ -291,32 +282,6 @@ class TaskManager:
         except Exception as exc:
             logger.error(f"写入冷却状态失败: {exc}")
             return None
-
-    def _persist_renewed_cookies(
-        self,
-        client: Any,
-        cookie: str,
-        logger: RunLogger,
-    ) -> list[str]:
-        """Merge server-reissued cookies back into storage so the session keeps rolling."""
-        renew = getattr(client, "renewed_cookies", None)
-        if not callable(renew):
-            return []
-        try:
-            renewed = renew()
-        except Exception as exc:
-            logger.warning(f"收集 Cookie 续期信息失败: {str(exc)[:300]}")
-            return []
-        if not renewed:
-            return []
-        try:
-            merged = merge_renewed_cookies(cookie, renewed)
-            self.db.update_cookie_value(encrypt_cookie(merged, self.settings.secret_key))
-        except Exception as exc:
-            logger.warning(f"Cookie 续期写回失败（不影响签到结果）: {str(exc)[:300]}")
-            return []
-        logger.info(f"Cookie 已续期: {', '.join(sorted(renewed))}")
-        return sorted(renewed)
 
     @staticmethod
     def _topic_dict(snapshot: Any) -> dict[str, Any]:

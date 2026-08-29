@@ -7,7 +7,6 @@ from app.weibo import (
     CookieFormatError,
     WeiboClient,
     WeiboRequestError,
-    merge_renewed_cookies,
     normalize_cookie,
 )
 
@@ -158,8 +157,11 @@ def test_weibo_client_rejects_non_container_scheme():
         client.close()
 
 
-def test_client_collects_cookies_reissued_by_server():
+def test_client_sends_frozen_cookie_header():
+    captured: list[httpx.Request] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
         return httpx.Response(
             200,
             json={"data": {"login": True}},
@@ -168,21 +170,21 @@ def test_client_collects_cookies_reissued_by_server():
         )
 
     client = WeiboClient(
-        "SUB=old; SUBP=keep",
+        "SUB=old; SUBP=keep; XSRF-TOKEN=tok123",
         transport=httpx.MockTransport(handler),
         retry_delay=0,
     )
     try:
         client.verify_login()
-        assert client.renewed_cookies() == {"SUB": "renewed-value"}
-        # 手动请求头已被 jar 取代,但发送内容一致
+        client.verify_login()
     finally:
         client.close()
 
-
-def test_merge_renewed_cookies_updates_values_and_appends_new():
-    merged = merge_renewed_cookies("SUB=old; SUBP=keep", {"SUB": "new", "XSRF-TOKEN": "t1"})
-    assert merged == "SUB=new; SUBP=keep; XSRF-TOKEN=t1"
+    assert len(captured) == 2
+    for request in captured:
+        # 冻结头:两次请求的 Cookie 逐字节一致,不跟随 Set-Cookie
+        assert request.headers["Cookie"] == "SUB=old; SUBP=keep; XSRF-TOKEN=tok123"
+        assert request.headers["X-XSRF-TOKEN"] == "tok123"
 
 
 def test_checkin_retries_once_with_fresh_st_on_verify_error():

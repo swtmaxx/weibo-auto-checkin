@@ -79,28 +79,6 @@ def normalize_cookie(raw_cookie: str) -> str:
     return "; ".join(pairs)
 
 
-def merge_renewed_cookies(base: str, updates: dict[str, str]) -> str:
-    """Merge re-issued cookie values into a canonical cookie header string."""
-    pairs: list[tuple[str, str]] = []
-    index: dict[str, int] = {}
-    for part in base.split(";"):
-        part = part.strip()
-        if not part:
-            continue
-        name, _, value = part.partition("=")
-        name = name.strip()
-        if name and name not in index:
-            index[name] = len(pairs)
-            pairs.append((name, value.strip()))
-    for name, value in updates.items():
-        if name in index:
-            pairs[index[name]] = (name, value)
-        else:
-            index[name] = len(pairs)
-            pairs.append((name, value))
-    return "; ".join(f"{name}={value}" for name, value in pairs)
-
-
 @dataclass(frozen=True)
 class LoginStatus:
     logged_in: bool
@@ -142,50 +120,31 @@ class WeiboClient:
         self.timeout = timeout
         self.retry_delay = retry_delay
         self.read_retry_count = max(0, min(2, int(read_retry_count)))
-        self._initial: dict[str, str] = {}
-        cookies = httpx.Cookies()
+        self._xsrf_token: str | None = None
         for item in self.cookie.split("; "):
             name, _, value = item.partition("=")
-            if name and value:
-                cookies.set(name, value, domain=httpx.URL(base_url or self.base_url).host)
-                self._initial[name] = value
+            if name == "XSRF-TOKEN" and value:
+                self._xsrf_token = value
+                break
+        default_headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "Chrome/124.0 Safari/537.36"
+            ),
+        }
+        if self._xsrf_token:
+            default_headers["X-XSRF-TOKEN"] = self._xsrf_token
         self._client = httpx.Client(
             base_url=base_url or self.base_url,
             transport=transport,
             follow_redirects=True,
-            cookies=cookies,
-            headers={
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "Chrome/124.0 Safari/537.36"
-                ),
-            },
+            headers=default_headers,
         )
 
     def close(self) -> None:
         self._client.close()
-
-    def _jar_value(self, name: str) -> str | None:
-        value = None
-        for cookie in self._client.cookies.jar:
-            if cookie.name == name and cookie.value:
-                value = cookie.value
-        return value
-
-    def renewed_cookies(self) -> dict[str, str]:
-        """Cookie values re-issued by the server during this client's lifetime."""
-        current = {
-            cookie.name: cookie.value
-            for cookie in self._client.cookies.jar
-            if cookie.value
-        }
-        return {
-            name: value
-            for name, value in current.items()
-            if self._initial.get(name) != value
-        }
 
     def _request(
         self,
@@ -197,12 +156,10 @@ class WeiboClient:
         risk_on_forbidden: bool = True,
     ) -> dict[str, Any]:
         headers = {
+            "Cookie": self.cookie,
             "Referer": referer,
             "X-Requested-With": "XMLHttpRequest",
         }
-        xsrf = self._jar_value("XSRF-TOKEN") or self._initial.get("XSRF-TOKEN")
-        if xsrf:
-            headers["X-XSRF-TOKEN"] = xsrf
         last_error: Exception | None = None
         max_retries = self.read_retry_count if retry else 0
         for attempt in range(max_retries + 1):

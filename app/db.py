@@ -179,15 +179,6 @@ class Database:
                 (ciphertext, imported_at or utc_now()),
             )
 
-    def update_cookie_value(self, ciphertext: str) -> bool:
-        """Persist a re-issued cookie value without resetting verification state."""
-        with self._lock, self._connect() as conn:
-            cursor = conn.execute(
-                "UPDATE account SET cookie_ciphertext = ? WHERE id = 1",
-                (ciphertext,),
-            )
-            return cursor.rowcount == 1
-
     def update_verification(
         self,
         logged_in: bool,
