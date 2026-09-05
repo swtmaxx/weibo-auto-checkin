@@ -139,13 +139,26 @@
     });
   }
 
+  function expiryDays(account) {
+    if (!account.expires_at) return null;
+    const ms = new Date(account.expires_at).getTime() - Date.now();
+    return Number.isNaN(ms) ? null : Math.floor(ms / 86400000);
+  }
+
   function accountBadge(account) {
     const badge = $("#account-badge");
     if (!badge) return;
     badge.className = "badge";
+    const days = expiryDays(account);
     if (!account.configured) {
       badge.classList.add("badge-neutral");
       badge.textContent = "未配置";
+    } else if (days !== null && days <= 0) {
+      badge.classList.add("badge-red");
+      badge.textContent = "Cookie 已过期";
+    } else if (account.logged_in && days !== null && days <= 3) {
+      badge.classList.add("badge-amber");
+      badge.textContent = "Cookie 即将失效";
     } else if (account.logged_in) {
       badge.classList.add("badge-green");
       badge.textContent = "登录有效";
@@ -159,7 +172,12 @@
     const account = await request("/api/account");
     accountBadge(account);
     $("#account-state").textContent = !account.configured ? "未配置" : account.logged_in ? "已登录" : "待验证";
-    $("#account-detail").textContent = account.last_verified_at ? "验证于 " + formatDate(account.last_verified_at) : "需要导入 Cookie";
+    let detail = account.last_verified_at ? "验证于 " + formatDate(account.last_verified_at) : "需要导入 Cookie";
+    const days = expiryDays(account);
+    if (days !== null) {
+      detail += " · Cookie " + (days <= 0 ? "已过期" : "约 " + days + " 天后失效");
+    }
+    $("#account-detail").textContent = detail;
     $("#account-name").textContent = account.login_name || (account.configured ? "Cookie 已导入" : "尚未导入 Cookie");
     $("#account-message").textContent = account.verification_message || "Cookie 只会以加密形式保存在服务器。";
   }

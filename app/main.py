@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,17 @@ from .security import (
     verify_password,
 )
 from .tasks import RunBusyError, Scheduler, TaskManager
-from .weibo import CookieFormatError, WeiboError, normalize_cookie
+from .weibo import CookieFormatError, WeiboError, normalize_cookie, parse_cookie_expiry
+
+
+def _expiry_iso(cookie: str) -> str | None:
+    ts = parse_cookie_expiry(cookie)
+    if not ts:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 class PasswordPayload(BaseModel):
@@ -114,6 +125,7 @@ def _format_account(account: dict[str, Any] | None) -> dict[str, Any]:
             "login_uid": None,
             "login_name": None,
             "verification_message": None,
+            "expires_at": None,
         }
     return {
         "configured": True,
@@ -123,6 +135,7 @@ def _format_account(account: dict[str, Any] | None) -> dict[str, Any]:
         "login_uid": account["login_uid"],
         "login_name": account["login_name"],
         "verification_message": account["verification_message"],
+        "expires_at": account.get("cookie_expires_at"),
     }
 
 
@@ -297,7 +310,7 @@ def create_app(
             cookie = normalize_cookie(payload.cookie)
         except CookieFormatError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        app_db.save_cookie(encrypt_cookie(cookie, app_settings.secret_key))
+        app_db.save_cookie(encrypt_cookie(cookie, app_settings.secret_key), _expiry_iso(cookie))
         return {"ok": True, "account": _format_account(app_db.get_account())}
 
     @app.post("/api/account/verify", dependencies=[Depends(require_csrf)])
@@ -555,12 +568,13 @@ def create_app(
             if payload.account and payload.account.get("cookie_ciphertext"):
                 ciphertext = str(payload.account["cookie_ciphertext"])
                 try:
-                    decrypt_cookie(ciphertext, app_settings.secret_key)
+                    decrypted = decrypt_cookie(ciphertext, app_settings.secret_key)
                 except ValueError as exc:
                     raise ValueError("配置文件中的 Cookie 无法用当前 APP_SECRET_KEY 解密") from exc
                 app_db.restore_cookie(
                     ciphertext,
                     payload.account.get("imported_at"),
+                    _expiry_iso(decrypted),
                 )
             if payload.topics:
                 new_rows = []

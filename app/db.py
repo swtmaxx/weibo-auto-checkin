@@ -44,7 +44,8 @@ class Database:
                     logged_in INTEGER NOT NULL DEFAULT 0,
                     login_uid TEXT,
                     login_name TEXT,
-                    verification_message TEXT
+                    verification_message TEXT,
+                    cookie_expires_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS topics (
@@ -95,6 +96,11 @@ class Database:
                 INSERT OR IGNORE INTO schedule (id) VALUES (1);
                 """
             )
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(account)").fetchall()
+            }
+            if "cookie_expires_at" not in columns:
+                conn.execute("ALTER TABLE account ADD COLUMN cookie_expires_at TEXT")
 
     def get_config(self, key: str) -> str | None:
         with self._lock, self._connect() as conn:
@@ -139,14 +145,15 @@ class Database:
             row = conn.execute("SELECT * FROM account WHERE id = 1").fetchone()
             return dict(row) if row else None
 
-    def save_cookie(self, ciphertext: str) -> None:
+    def save_cookie(self, ciphertext: str, expires_at: str | None = None) -> None:
         now = utc_now()
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO account (
-                    id, cookie_ciphertext, imported_at, logged_in, verification_message
-                ) VALUES (1, ?, ?, 0, '尚未验证')
+                    id, cookie_ciphertext, imported_at, logged_in, verification_message,
+                    cookie_expires_at
+                ) VALUES (1, ?, ?, 0, '尚未验证', ?)
                 ON CONFLICT(id) DO UPDATE SET
                     cookie_ciphertext = excluded.cookie_ciphertext,
                     imported_at = excluded.imported_at,
@@ -154,19 +161,26 @@ class Database:
                     logged_in = 0,
                     login_uid = NULL,
                     login_name = NULL,
-                    verification_message = excluded.verification_message
+                    verification_message = excluded.verification_message,
+                    cookie_expires_at = excluded.cookie_expires_at
                 """,
-                (ciphertext, now),
+                (ciphertext, now, expires_at),
             )
 
-    def restore_cookie(self, ciphertext: str, imported_at: str | None = None) -> None:
+    def restore_cookie(
+        self,
+        ciphertext: str,
+        imported_at: str | None = None,
+        expires_at: str | None = None,
+    ) -> None:
         """Persist a cookie ciphertext coming from a configuration backup."""
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO account (
-                    id, cookie_ciphertext, imported_at, logged_in, verification_message
-                ) VALUES (1, ?, ?, 0, '已从备份导入，待验证')
+                    id, cookie_ciphertext, imported_at, logged_in, verification_message,
+                    cookie_expires_at
+                ) VALUES (1, ?, ?, 0, '已从备份导入，待验证', ?)
                 ON CONFLICT(id) DO UPDATE SET
                     cookie_ciphertext = excluded.cookie_ciphertext,
                     imported_at = excluded.imported_at,
@@ -174,9 +188,10 @@ class Database:
                     logged_in = 0,
                     login_uid = NULL,
                     login_name = NULL,
-                    verification_message = excluded.verification_message
+                    verification_message = excluded.verification_message,
+                    cookie_expires_at = excluded.cookie_expires_at
                 """,
-                (ciphertext, imported_at or utc_now()),
+                (ciphertext, imported_at or utc_now(), expires_at),
             )
 
     def update_verification(

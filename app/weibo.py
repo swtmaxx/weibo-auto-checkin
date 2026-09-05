@@ -79,6 +79,18 @@ def normalize_cookie(raw_cookie: str) -> str:
     return "; ".join(pairs)
 
 
+def parse_cookie_expiry(cookie: str) -> int | None:
+    """Extract the ALF field (Weibo session expiry, unix seconds) when present."""
+    for part in cookie.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "ALF":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
 @dataclass(frozen=True)
 class LoginStatus:
     logged_in: bool

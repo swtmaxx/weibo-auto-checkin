@@ -16,7 +16,7 @@ from app.db import Database, utc_now
 from app.main import create_app
 from app.security import LoginThrottle, decrypt_cookie, encrypt_cookie
 from app.tasks import Scheduler, TaskManager, jittered_delay
-from app.weibo import CheckinResult, LoginStatus
+from app.weibo import CheckinResult, LoginStatus, parse_cookie_expiry
 
 
 # ---------------------------------------------------------------------------
@@ -484,3 +484,53 @@ def test_policy_rejects_out_of_range_random_delays(tmp_path: Path):
             assert keyword in str(exc)
         else:
             raise AssertionError(f"{field}={value} should be rejected")
+
+
+# ---------------------------------------------------------------------------
+# Cookie expiry countdown
+# ---------------------------------------------------------------------------
+
+
+def test_parse_cookie_expiry():
+    assert parse_cookie_expiry("SUB=a; ALF=1790526381; MLOGIN=1") == 1790526381
+    assert parse_cookie_expiry("SUB=a") is None
+    assert parse_cookie_expiry("ALF=not-a-number") is None
+    assert parse_cookie_expiry("alf=123") is None  # 大小写敏感,与真实字段一致
+
+
+def test_save_cookie_stores_expiry(tmp_path: Path):
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+    )
+    database = Database(settings.db_path)
+    database.save_cookie(
+        encrypt_cookie("SUB=a; ALF=1790526381", settings.secret_key),
+        "2026-09-28T02:26:21+00:00",
+    )
+    account = database.get_account()
+    assert account["cookie_expires_at"] == "2026-09-28T02:26:21+00:00"
+
+    database.save_cookie(encrypt_cookie("SUB=b", settings.secret_key), None)
+    assert database.get_account()["cookie_expires_at"] is None
+
+
+def test_account_api_returns_expiry(tmp_path: Path):
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+    )
+    database = Database(settings.db_path)
+    with make_test_client(settings, database) as client:
+        csrf = setup_admin(client)
+        response = client.post(
+            "/api/account/cookie",
+            headers={"X-CSRF-Token": csrf},
+            json={"cookie": "SUB=a; ALF=1790526381"},
+        )
+        assert response.status_code == 200
+        account = response.json()["account"]
+        expected = datetime.fromtimestamp(1790526381, tz=timezone.utc).isoformat(timespec="seconds")
+        assert account["expires_at"] == expected
