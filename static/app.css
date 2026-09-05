@@ -29,6 +29,9 @@
   --danger-soft: #fdf0ef;
   --track: #d7d7db;
   --knob: #ffffff;
+  --heat-success: #bfe3cd;
+  --heat-partial: #f0e0b4;
+  --heat-failed: #f0c5c0;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   --radius: 8px;
   --radius-sm: 8px;
@@ -74,6 +77,9 @@
     --danger-soft: #33201e;
     --track: #3a3a40;
     --knob: #d4d4d8;
+    --heat-success: #2f5c43;
+    --heat-partial: #55461f;
+    --heat-failed: #5f322d;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 }
@@ -648,6 +654,56 @@ input[type="checkbox"]:disabled {
 
 .span-2 {
   grid-column: span 2;
+}
+
+.span-3 {
+  grid-column: 1 / -1;
+}
+
+.heatmap-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 13px);
+  gap: 3px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.heatmap-cell {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background: var(--surface-sunken);
+}
+
+.heatmap-cell.h-success {
+  background: var(--heat-success);
+}
+
+.heatmap-cell.h-partial {
+  background: var(--heat-partial);
+}
+
+.heatmap-cell.h-failed {
+  background: var(--heat-failed);
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 11px;
+}
+
+.heatmap-note {
+  margin-left: auto;
+}
+
+.heatmap-panel select {
+  width: auto;
 }
 
 .panel {
@@ -1249,6 +1305,10 @@ tbody tr:hover {
   }
 
   .span-2 {
+    grid-column: auto;
+  }
+
+  .span-3 {
     grid-column: auto;
   }
 }

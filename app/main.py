@@ -414,6 +414,16 @@ def create_app(
             "health": app_db.compute_health(app_settings.timezone),
         }
 
+    @app.get("/api/heatmap", dependencies=[Depends(require_auth)])
+    async def heatmap(days: int = 84, topic_key: str | None = None):
+        if topic_key and len(topic_key) > 512:
+            raise HTTPException(status_code=422, detail="topic_key 过长")
+        return app_db.compute_heatmap(
+            app_settings.timezone,
+            days=max(14, min(366, days)),
+            topic_key=topic_key or None,
+        )
+
     @app.get("/api/schedule", dependencies=[Depends(require_auth)])
     async def get_schedule():
         schedule = app_db.get_schedule()

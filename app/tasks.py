@@ -355,6 +355,11 @@ class TaskManager:
         }
         consecutive_failures = 0
         failed_keys: list[str] = []
+        try:
+            zone = ZoneInfo(self.settings.timezone)
+        except Exception:
+            zone = ZoneInfo("UTC")
+        heatmap_day = datetime.now(zone).date().isoformat()
         for index, topic in enumerate(selected, start=1):
             if cancel_event.is_set():
                 break
@@ -363,6 +368,7 @@ class TaskManager:
             if snapshot.remote_status == "signed":
                 summary["already"] += 1
                 self.db.update_topic_result(topic["topic_key"], "signed", "今日已签到")
+                self.db.record_topic_daily(topic["topic_key"], heatmap_day, success=1)
                 logger.info(f"{snapshot.name}: 今日已签到")
                 consecutive_failures = 0
                 continue
@@ -389,17 +395,20 @@ class TaskManager:
                     summary["success"] += 1
                     consecutive_failures = 0
                     self.db.update_topic_result(topic["topic_key"], "signed", result.message)
+                    self.db.record_topic_daily(topic["topic_key"], heatmap_day, success=1)
                     logger.success(f"{snapshot.name}: {result.message}")
                 elif result.status == "already":
                     summary["already"] += 1
                     consecutive_failures = 0
                     self.db.update_topic_result(topic["topic_key"], "signed", result.message)
+                    self.db.record_topic_daily(topic["topic_key"], heatmap_day, success=1)
                     logger.info(f"{snapshot.name}: {result.message}")
                 else:
                     summary["failed"] += 1
                     consecutive_failures += 1
                     failed_keys.append(topic["topic_key"])
                     self.db.update_topic_result(topic["topic_key"], "available", result.message)
+                    self.db.record_topic_daily(topic["topic_key"], heatmap_day, failed=1)
                     logger.warning(f"{snapshot.name}: {result.message}")
                     if (
                         policy.max_consecutive_failures

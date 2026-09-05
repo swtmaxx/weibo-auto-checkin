@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -91,6 +91,14 @@ class Database:
                     first_seen_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
                     source TEXT NOT NULL DEFAULT 'C2C_MESSAGE_CREATE'
+                );
+
+                CREATE TABLE IF NOT EXISTS topic_daily (
+                    topic_key TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    success INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (topic_key, date)
                 );
 
                 INSERT OR IGNORE INTO schedule (id) VALUES (1);
@@ -550,6 +558,94 @@ class Database:
             "auth_failures": auth_failures,
             "days": days,
         }
+
+    def record_topic_daily(self, topic_key: str, day: str, *, success: int = 0, failed: int = 0) -> None:
+        """Accumulate a topic's daily check-in outcome for the heatmap."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO topic_daily(topic_key, date, success, failed)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(topic_key, date) DO UPDATE SET
+                    success = success + excluded.success,
+                    failed = failed + excluded.failed
+                """,
+                (topic_key, day, success, failed),
+            )
+
+    def compute_heatmap(self, timezone_name: str, days: int = 84, topic_key: str | None = None) -> dict[str, Any]:
+        """Daily check-in states for the heatmap (account-level or per topic)."""
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = timezone.utc
+        today = datetime.now(zone).date()
+        first_day = today - timedelta(days=days - 1)
+        first_utc = datetime.combine(
+            first_day, time.min, tzinfo=zone
+        ).astimezone(timezone.utc).isoformat(timespec="seconds")
+
+        daily: dict[str, dict[str, int]] = {}
+        with self._lock, self._connect() as conn:
+            if topic_key:
+                rows = conn.execute(
+                    """
+                    SELECT date, success, failed FROM topic_daily
+                    WHERE topic_key = ? AND date >= ?
+                    """,
+                    (topic_key, first_day.isoformat()),
+                ).fetchall()
+                for row in rows:
+                    bucket = daily.setdefault(row["date"], {"success": 0, "failed": 0})
+                    bucket["success"] += row["success"]
+                    bucket["failed"] += row["failed"]
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT created_at, summary_json FROM runs
+                    WHERE created_at >= ? AND status = 'completed'
+                      AND kind IN ('checkin', 'scheduled', 'makeup')
+                    """,
+                    (first_utc,),
+                ).fetchall()
+                for row in rows:
+                    try:
+                        local_day = (
+                            datetime.fromisoformat(row["created_at"]).astimezone(zone).date().isoformat()
+                        )
+                    except ValueError:
+                        continue
+                    try:
+                        summary = json.loads(row["summary_json"] or "{}")
+                    except json.JSONDecodeError:
+                        continue
+                    bucket = daily.setdefault(local_day, {"success": 0, "failed": 0})
+                    bucket["success"] += max(0, int(summary.get("success") or 0))
+                    bucket["success"] += max(0, int(summary.get("already") or 0))
+                    bucket["failed"] += max(0, int(summary.get("failed") or 0))
+
+        cells: list[dict[str, Any]] = []
+        for offset in range(days):
+            day = (first_day + timedelta(days=offset)).isoformat()
+            bucket = daily.get(day, {"success": 0, "failed": 0})
+            attempted = bucket["success"] + bucket["failed"]
+            if attempted == 0:
+                state = "none"
+            elif bucket["failed"] == 0:
+                state = "success"
+            elif bucket["success"] == 0:
+                state = "failed"
+            else:
+                state = "partial"
+            cells.append(
+                {
+                    "date": day,
+                    "success": bucket["success"],
+                    "failed": bucket["failed"],
+                    "state": state,
+                }
+            )
+        return {"days": days, "topic_key": topic_key, "cells": cells}
 
     def get_schedule(self) -> dict[str, Any]:
         with self._lock, self._connect() as conn:

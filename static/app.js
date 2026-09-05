@@ -296,6 +296,59 @@
     const data = await request("/api/topics");
     allTopics = data.topics || [];
     renderTopics(applyTopicFilters(allTopics));
+    syncHeatmapTopicOptions();
+  }
+
+  function syncHeatmapTopicOptions() {
+    const select = $("#heatmap-topic");
+    if (!select) return;
+    const current = select.value;
+    select.replaceChildren();
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "全部超话";
+    select.appendChild(all);
+    allTopics.forEach((topic) => {
+      const option = document.createElement("option");
+      option.value = topic.topic_key;
+      option.textContent = topic.name;
+      select.appendChild(option);
+    });
+    select.value = current;
+    if (select.value !== current) select.value = "";
+  }
+
+  async function loadHeatmap() {
+    const select = $("#heatmap-topic");
+    if (!select) return;
+    const params = new URLSearchParams({ days: "84" });
+    if (select.value) params.set("topic_key", select.value);
+    const data = await request("/api/heatmap?" + params.toString());
+    renderHeatmap(data.cells || []);
+    const note = $("#heatmap-note");
+    if (note) note.textContent = select.value ? "单超话记录自本版本起累积" : "";
+  }
+
+  function renderHeatmap(cells) {
+    const grid = $("#heatmap-grid");
+    if (!grid) return;
+    grid.replaceChildren();
+    let pad = 0;
+    if (cells.length) {
+      const weekday = new Date(cells[0].date + "T00:00:00").getDay();
+      pad = (weekday + 6) % 7; // 周一作为第一行
+    }
+    for (let i = 0; i < pad; i++) {
+      const blank = document.createElement("span");
+      blank.className = "heatmap-cell";
+      grid.appendChild(blank);
+    }
+    cells.forEach((cell) => {
+      const el = document.createElement("span");
+      el.className = "heatmap-cell h-" + (cell.state || "none");
+      el.title = cell.date + " · 成功 " + cell.success + " · 失败 " + cell.failed;
+      grid.appendChild(el);
+    });
   }
 
   async function bulkTopics(enabled) {
@@ -867,7 +920,7 @@
   async function loadDashboard() {
     const status = await request("/api/status");
     csrf.value = status.csrf_token;
-    await Promise.all([loadAccount(), loadTopics(), loadSchedule(), loadHistory(), loadCurrentTask(), loadStats().catch((err) => showToast(err.message, true))]);
+    await Promise.all([loadAccount(), loadTopics(), loadSchedule(), loadHistory(), loadCurrentTask(), loadStats().catch((err) => showToast(err.message, true)), loadHeatmap().catch((err) => showToast(err.message, true))]);
   }
 
   function bindDashboard() {
@@ -916,6 +969,7 @@
       $("#topic-status-filter").addEventListener("change", () => renderTopics(applyTopicFilters(allTopics)));
       $("#topics-enable-all").addEventListener("click", () => bulkTopics(true));
       $("#topics-disable-all").addEventListener("click", () => bulkTopics(false));
+      $("#heatmap-topic").addEventListener("change", () => loadHeatmap().catch((err) => showToast(err.message, true)));
     }
     $("#cancel-button").addEventListener("click", async () => {
       const button = $("#cancel-button");

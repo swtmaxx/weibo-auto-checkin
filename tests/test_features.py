@@ -740,3 +740,59 @@ def test_adaptive_delay_bump_and_decay_bounds(tmp_path: Path):
     for _ in range(10):
         state.decay_delay()
     assert state.current_delay_multiplier() == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Heatmap
+# ---------------------------------------------------------------------------
+
+
+def test_compute_heatmap_account_level(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    zone = ZoneInfo("Asia/Shanghai")
+    _insert_run(database.path, "checkin", "completed", _local_created_at(zone, 0, 9), {"success": 3})
+    _insert_run(database.path, "checkin", "completed", _local_created_at(zone, 1, 9), {"success": 1, "failed": 1})
+    _insert_run(database.path, "checkin", "completed", _local_created_at(zone, 2, 9), {"failed": 2})
+
+    heatmap = database.compute_heatmap("Asia/Shanghai", days=7)
+    cells = {cell["date"]: cell for cell in heatmap["cells"]}
+    today = (datetime.now(zone).date()).isoformat()
+
+    assert len(heatmap["cells"]) == 7
+    assert cells[today]["state"] == "success"
+    assert cells[today]["success"] == 3
+    yesterday = (datetime.now(zone).date() - timedelta(days=1)).isoformat()
+    assert cells[yesterday]["state"] == "partial"
+    two_ago = (datetime.now(zone).date() - timedelta(days=2)).isoformat()
+    assert cells[two_ago]["state"] == "failed"
+    empty = (datetime.now(zone).date() - timedelta(days=3)).isoformat()
+    assert cells[empty]["state"] == "none"
+
+
+def test_compute_heatmap_topic_level(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    zone = ZoneInfo("Asia/Shanghai")
+    today = datetime.now(zone).date().isoformat()
+    database.record_topic_daily("t1", today, success=2)
+    database.record_topic_daily("t1", today, success=1, failed=1)
+
+    heatmap = database.compute_heatmap("Asia/Shanghai", days=7, topic_key="t1")
+    cells = {cell["date"]: cell for cell in heatmap["cells"]}
+    assert cells[today]["success"] == 3
+    assert cells[today]["failed"] == 1
+    assert cells[today]["state"] == "partial"
+    assert heatmap["topic_key"] == "t1"
+
+    other = database.compute_heatmap("Asia/Shanghai", days=7, topic_key="t2")
+    assert all(cell["state"] == "none" for cell in other["cells"])
+
+
+def test_record_topic_daily_accumulates(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    database.record_topic_daily("t1", "2026-08-29", success=1)
+    database.record_topic_daily("t1", "2026-08-29", failed=1)
+    with sqlite3.connect(database.path) as conn:
+        row = conn.execute(
+            "SELECT success, failed FROM topic_daily WHERE topic_key = 't1' AND date = '2026-08-29'"
+        ).fetchone()
+    assert row == (1, 1)

@@ -179,7 +179,27 @@
         </div>
       </section>
 
-      <section class="panel span-2">
+      <section class="panel heatmap-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">HEATMAP</p>
+            <h2>签到热力图</h2>
+          </div>
+          <select id="heatmap-topic" aria-label="选择超话">
+            <option value="">全部超话</option>
+          </select>
+        </div>
+        <div id="heatmap-grid" class="heatmap-grid"></div>
+        <div class="heatmap-legend">
+          <span class="muted">无记录</span><span class="heatmap-cell"></span>
+          <span class="muted">全部成功</span><span class="heatmap-cell h-success"></span>
+          <span class="muted">部分失败</span><span class="heatmap-cell h-partial"></span>
+          <span class="muted">全部失败</span><span class="heatmap-cell h-failed"></span>
+          <span id="heatmap-note" class="muted heatmap-note"></span>
+        </div>
+      </section>
+
+      <section class="panel span-3">
         <div class="panel-header">
           <div>
             <p class="eyebrow">ACTIVITY</p>
@@ -191,7 +211,7 @@
         <div id="logs" class="logs" aria-live="polite"><div class="empty-state">任务日志会显示在这里</div></div>
       </section>
 
-      <section class="panel span-2">
+      <section class="panel span-3">
         <div class="panel-header">
           <div>
             <p class="eyebrow">HISTORY</p>
