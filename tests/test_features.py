@@ -683,3 +683,60 @@ def test_makeup_run_without_failures_completes_empty(tmp_path: Path):
     assert run["status"] == "completed"
     assert run["summary"]["selected"] == 0
     assert client.called is True
+
+
+# ---------------------------------------------------------------------------
+# Health score & adaptive delay
+# ---------------------------------------------------------------------------
+
+
+def test_compute_health_scores_recent_runs(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    now = utc_now()
+    rows = [
+        ("checkin", "completed", {"success": 8, "failed": 0}, None),
+        ("checkin", "completed", {"success": 4, "already": 2, "failed": 2}, None),
+        ("checkin", "failed", {"risk_status": 429}, "微博返回 HTTP 429"),
+        ("sync", "failed", {}, "Cookie 已失效或未登录"),
+        ("checkin", "failed", {"auth_failed": True}, "Cookie 已失效或未登录"),
+    ]
+    for index, (kind, status, summary, error) in enumerate(rows, start=1):
+        _insert_run(database.path, kind, status, now, summary)
+        if error:
+            conn = sqlite3.connect(database.path)
+            conn.execute("UPDATE runs SET error = ? WHERE id = ?", (error, index))
+            conn.commit()
+            conn.close()
+
+    health = database.compute_health("Asia/Shanghai")
+
+    # attempted = 16, rate = (8+4+2)/16 = 0.875
+    assert health["success_rate"] == (8 + 4 + 2) / 16
+    assert health["risk_count"] == 1
+    assert health["auth_failures"] == 1
+    expected = round(health["success_rate"] * 70) - 10 - 10
+    assert health["score"] == max(0, min(100, expected))
+    assert health["grade"] in {"优", "良", "差"}
+
+
+def test_compute_health_empty_database(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    health = database.compute_health("Asia/Shanghai")
+    assert health["score"] is None
+    assert health["grade"] == "暂无数据"
+
+
+def test_adaptive_delay_bump_and_decay_bounds(tmp_path: Path):
+    state = make_runtime_state(tmp_path)
+    assert state.current_delay_multiplier() == 1.0
+
+    assert state.bump_delay() == 1.5
+    assert state.bump_delay() == 2.25
+    for _ in range(10):
+        state.bump_delay()
+    assert state.current_delay_multiplier() == 4.0
+
+    assert state.decay_delay() == 3.2
+    for _ in range(10):
+        state.decay_delay()
+    assert state.current_delay_multiplier() == 1.0

@@ -409,7 +409,10 @@ def create_app(
 
     @app.get("/api/stats", dependencies=[Depends(require_auth)])
     async def stats():
-        return app_db.compute_stats(app_settings.timezone)
+        return {
+            **app_db.compute_stats(app_settings.timezone),
+            "health": app_db.compute_health(app_settings.timezone),
+        }
 
     @app.get("/api/schedule", dependencies=[Depends(require_auth)])
     async def get_schedule():

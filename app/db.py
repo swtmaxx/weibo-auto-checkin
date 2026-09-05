@@ -496,6 +496,61 @@ class Database:
                     keys.append(key)
         return keys
 
+    def compute_health(self, timezone_name: str, days: int = 14) -> dict[str, Any]:
+        """100-point account health from recent run outcomes and risk events."""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat(timespec="seconds")
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, status, summary_json FROM runs WHERE created_at >= ?",
+                (cutoff,),
+            ).fetchall()
+        totals = {"success": 0, "already": 0, "failed": 0}
+        risk_count = 0
+        auth_failures = 0
+        for row in rows:
+            try:
+                summary = json.loads(row["summary_json"] or "{}")
+            except json.JSONDecodeError:
+                summary = {}
+            if summary.get("risk_status"):
+                risk_count += 1
+            if row["status"] == "failed" and summary.get("auth_failed"):
+                auth_failures += 1
+            if row["status"] == "completed" and row["kind"] in ("checkin", "scheduled", "makeup"):
+                for key in totals:
+                    totals[key] += max(0, int(summary.get(key) or 0))
+        attempted = totals["success"] + totals["already"] + totals["failed"]
+        if attempted == 0 and risk_count == 0 and auth_failures == 0:
+            return {
+                "score": None,
+                "grade": "暂无数据",
+                "suggestion": "运行一轮签到后生成健康评估",
+                "success_rate": None,
+                "risk_count": risk_count,
+                "auth_failures": auth_failures,
+                "days": days,
+            }
+        rate = (totals["success"] + totals["already"]) / attempted if attempted else 0.0
+        score = round(rate * 70) - min(20, risk_count * 10) - min(15, auth_failures * 10)
+        score = max(0, min(100, score))
+        if score >= 85:
+            grade, suggestion = "优", "运行平稳，保持当前节奏"
+        elif score >= 60:
+            grade, suggestion = "良", "建议适当放慢签到节奏"
+        else:
+            grade, suggestion = "差", "建议降低频率或更换 Cookie"
+        return {
+            "score": score,
+            "grade": grade,
+            "suggestion": suggestion,
+            "success_rate": rate if attempted else None,
+            "risk_count": risk_count,
+            "auth_failures": auth_failures,
+            "days": days,
+        }
+
     def get_schedule(self) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM schedule WHERE id = 1").fetchone()

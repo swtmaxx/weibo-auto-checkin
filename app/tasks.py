@@ -181,6 +181,7 @@ class TaskManager:
             login = client.verify_login()
             self.db.update_verification(login.logged_in, login.message, login.uid, login.name)
             if not login.logged_in:
+                summary["auth_failed"] = True
                 raise WeiboAuthError(login.message)
             logger.success(login.message)
 
@@ -188,6 +189,8 @@ class TaskManager:
                 summary = self._run_single_checkin(client, topic_key, logger)
                 status = "cancelled" if cancel_event.is_set() else "completed"
                 self.db.finish_run(run_id, status, summary)
+                if status == "completed":
+                    self._decay_delay()
                 return
 
             logger.info("正在读取关注的超话列表")
@@ -199,6 +202,8 @@ class TaskManager:
                 summary = {"discovered": len(snapshots)}
                 status = "cancelled" if cancel_event.is_set() else "completed"
                 self.db.finish_run(run_id, status, summary)
+                if status == "completed":
+                    self._decay_delay()
                 return
 
             if kind == "makeup":
@@ -208,6 +213,7 @@ class TaskManager:
                 if not snapshots:
                     logger.info("今天没有需要补签的超话")
                     self.db.finish_run(run_id, "completed", {"selected": 0})
+                    self._decay_delay()
                     return
 
             summary = self._run_checkins(client, snapshots, cancel_event, logger, policy)
@@ -221,12 +227,15 @@ class TaskManager:
                 summary=summary,
             )
             self.db.finish_run(run_id, status, summary)
+            if status == "completed":
+                self._decay_delay()
         except WeiboRiskError as exc:
             cooldown = (
                 self._safe_set_cooldown(str(exc), logger)
                 if policy.cooldown_on_rate_limit
                 else None
             )
+            self.runtime_state.bump_delay()
             summary["risk_status"] = exc.status_code
             if cooldown:
                 summary["cooldown_until"] = cooldown["until"]
@@ -414,11 +423,17 @@ class TaskManager:
                     break
             if index < len(selected):
                 delay = jittered_delay(policy.checkin_delay_seconds, policy.delay_jitter_percent)
-                cancel_event.wait(delay)
+                cancel_event.wait(delay * self.runtime_state.current_delay_multiplier())
         summary["cancelled"] = cancel_event.is_set()
         if failed_keys:
             summary["failed_keys"] = failed_keys[:200]
         return summary
+
+    def _decay_delay(self) -> None:
+        try:
+            self.runtime_state.decay_delay()
+        except Exception:
+            pass
 
 
     def _run_single_checkin(

@@ -18,6 +18,7 @@ RUNTIME_SETTINGS_KEY = "runtime_settings"
 NOTIFICATION_SETTINGS_KEY = "notification_settings"
 COOLDOWN_UNTIL_KEY = "cooldown_until"
 COOLDOWN_REASON_KEY = "cooldown_reason"
+ADAPTIVE_DELAY_KEY = "adaptive_delay"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -381,3 +382,34 @@ class RuntimeState:
 
     def is_cooling_down(self) -> bool:
         return bool(self.cooldown_status()["active"])
+
+    def current_delay_multiplier(self) -> float:
+        stored = self.database.get_json_config(ADAPTIVE_DELAY_KEY) or {}
+        try:
+            value = float(stored.get("multiplier", 1.0))
+        except (TypeError, ValueError):
+            value = 1.0
+        return max(1.0, min(4.0, value))
+
+    def bump_delay(self) -> float:
+        """Slow down after risk control; the multiplier decays back on calm runs."""
+        value = min(4.0, self.current_delay_multiplier() * 1.5)
+        self.database.set_json_config(
+            ADAPTIVE_DELAY_KEY,
+            {
+                "multiplier": value,
+                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        )
+        return value
+
+    def decay_delay(self) -> float:
+        value = max(1.0, self.current_delay_multiplier() * 0.8)
+        self.database.set_json_config(
+            ADAPTIVE_DELAY_KEY,
+            {
+                "multiplier": value,
+                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            },
+        )
+        return value

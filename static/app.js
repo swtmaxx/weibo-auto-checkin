@@ -325,17 +325,22 @@
     const rate = $("#stat-success-rate");
     const count = $("#stat-success-count");
     const streak = $("#stat-streak");
-    if (!rate || !count || !streak) return;
+    const health = $("#stat-health");
+    if (!rate || !count || !streak || !health) return;
     try {
       const data = await request("/api/stats");
       rate.textContent =
         data.success_rate == null ? "—" : Math.round(data.success_rate * 100) + "%";
       count.textContent = String((data.success || 0) + (data.already || 0));
       streak.textContent = (data.streak_days || 0) + " 天";
+      const h = data.health || {};
+      health.textContent = h.score == null ? "—" : h.score + " " + (h.grade || "");
+      health.title = h.suggestion || "";
     } catch (err) {
       rate.textContent = "—";
       count.textContent = "—";
       streak.textContent = "—";
+      health.textContent = "—";
       throw err;
     }
   }
