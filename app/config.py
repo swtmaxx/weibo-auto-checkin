@@ -41,6 +41,7 @@ class Settings:
     session_max_age: int = 60 * 60 * 24 * 30
     history_retention_days: int = 90
     schedule_catch_up: bool = True
+    makeup_delay_minutes: int = 180
 
     @classmethod
     def from_env(cls, base_dir: Path | None = None) -> "Settings":
@@ -83,6 +84,7 @@ class Settings:
             scheduler_poll_seconds=max(1.0, float(os.getenv("APP_SCHEDULER_POLL_SECONDS", "15"))),
             history_retention_days=max(0, int(os.getenv("APP_HISTORY_RETENTION_DAYS", "90"))),
             schedule_catch_up=_env_bool("APP_SCHEDULE_CATCH_UP", True),
+            makeup_delay_minutes=max(0, int(os.getenv("APP_MAKEUP_DELAY_MINUTES", "180"))),
         )
 
 
@@ -97,6 +99,7 @@ class RuntimePolicy:
     cooldown_on_rate_limit: bool = True
     cooldown_hours: int = 0
     schedule_jitter_minutes: int = 0
+    auto_makeup: bool = True
 
     @classmethod
     def defaults(cls, settings: Settings) -> "RuntimePolicy":
@@ -115,6 +118,7 @@ class RuntimePolicy:
             schedule_jitter_minutes=max(
                 0, min(120, int(os.getenv("APP_SCHEDULE_JITTER_MINUTES", "0")))
             ),
+            auto_makeup=_env_bool("APP_AUTO_MAKEUP", True),
         )
 
     @classmethod
@@ -148,6 +152,7 @@ class RuntimePolicy:
             "schedule_jitter_minutes": mapping.get(
                 "schedule_jitter_minutes", fallback.schedule_jitter_minutes
             ),
+            "auto_makeup": mapping.get("auto_makeup", fallback.auto_makeup),
         }
         try:
             policy = cls(
@@ -160,6 +165,7 @@ class RuntimePolicy:
                 cooldown_on_rate_limit=bool(values["cooldown_on_rate_limit"]),
                 cooldown_hours=int(values["cooldown_hours"]),
                 schedule_jitter_minutes=int(values["schedule_jitter_minutes"]),
+                auto_makeup=bool(values["auto_makeup"]),
             )
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("运行配置格式错误") from exc

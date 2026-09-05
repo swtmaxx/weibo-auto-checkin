@@ -15,8 +15,8 @@ from app.config import RuntimePolicy, Settings, RuntimeState
 from app.db import Database, utc_now
 from app.main import create_app
 from app.security import LoginThrottle, decrypt_cookie, encrypt_cookie
-from app.tasks import Scheduler, TaskManager, jittered_delay
-from app.weibo import CheckinResult, LoginStatus, parse_cookie_expiry
+from app.tasks import Scheduler, TaskManager, jittered_delay, local_day_window
+from app.weibo import CheckinResult, LoginStatus, TopicSnapshot, parse_cookie_expiry
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +534,152 @@ def test_account_api_returns_expiry(tmp_path: Path):
         account = response.json()["account"]
         expected = datetime.fromtimestamp(1790526381, tz=timezone.utc).isoformat(timespec="seconds")
         assert account["expires_at"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Auto make-up
+# ---------------------------------------------------------------------------
+
+
+def test_run_summary_records_failed_keys(tmp_path: Path):
+    settings, database = make_single_task_database(tmp_path)
+    database.upsert_topics(
+        [
+            {
+                "topic_key": f"failure-{index}",
+                "name": f"失败超话 {index}",
+                "remote_status": "unknown",
+                "checkin_scheme": f"/api/container/button?x={index}",
+            }
+            for index in range(2)
+        ]
+    )
+    for index in range(2):
+        database.update_topic_enabled(f"failure-{index}", True)
+
+    class FailAllClient:
+        def __init__(self, cookie: str):
+            pass
+
+        def verify_login(self):
+            return LoginStatus(True, "1", "用户", "Cookie 有效")
+
+        def list_topics(self, cancel_event):
+            return [
+                TopicSnapshot(f"failure-{i}", f"失败超话 {i}", "", "available", f"/scheme/{i}")
+                for i in range(2)
+            ]
+
+        def checkin(self, scheme: str):
+            return CheckinResult("failed", "签到失败", {})
+
+    manager = TaskManager(database, settings, client_factory=FailAllClient)
+    policy, notification = manager.runtime_state.snapshot()
+    manager.runtime_state.save(replace(policy, checkin_delay_seconds=3.0), notification)
+    run_id = manager.start("checkin")
+    run = wait_for_run(database, run_id, timeout=8)
+
+    assert run["status"] == "completed"
+    assert run["summary"]["failed"] == 2
+    assert run["summary"]["failed_keys"] == ["failure-0", "failure-1"]
+
+
+def test_get_failed_keys_between(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds")
+    _insert_run(database.path, "checkin", "completed", old, {"failed_keys": ["stale"]})
+    _insert_run(database.path, "checkin", "completed", utc_now(), {"failed_keys": ["a", "b"]})
+    _insert_run(database.path, "checkin", "completed", utc_now(), {"failed_keys": ["b", "c"]})
+    _insert_run(database.path, "sync", "completed", utc_now(), {"failed_keys": ["ignored"]})
+
+    start, end = local_day_window("Asia/Shanghai")
+    assert database.get_failed_keys_between(start, end) == ["a", "b", "c"]
+
+
+def test_makeup_run_retries_only_failed_topics(tmp_path: Path):
+    settings, database = make_single_task_database(tmp_path)
+    database.upsert_topics(
+        [
+            {
+                "topic_key": "t1",
+                "name": "失败过",
+                "remote_status": "unknown",
+                "checkin_scheme": "/api/container/button?id=1",
+            },
+            {
+                "topic_key": "t2",
+                "name": "没失败",
+                "remote_status": "unknown",
+                "checkin_scheme": "/api/container/button?id=2",
+            },
+        ]
+    )
+    for key in ("t1", "t2"):
+        database.update_topic_enabled(key, True)
+    _insert_run(database.path, "checkin", "completed", utc_now(), {"failed_keys": ["t1"]})
+
+    checkins: list[str] = []
+
+    class MakeupClient:
+        def __init__(self, cookie: str):
+            pass
+
+        def verify_login(self):
+            return LoginStatus(True, "1", "用户", "Cookie 有效")
+
+        def list_topics(self, cancel_event):
+            return [
+                TopicSnapshot("t1", "失败过", "", "available", "/api/container/button?id=1"),
+                TopicSnapshot("t2", "没失败", "", "available", "/api/container/button?id=2"),
+            ]
+
+        def checkin(self, scheme: str):
+            checkins.append(scheme)
+            return CheckinResult("success", "补签成功", {})
+
+    manager = TaskManager(database, settings, client_factory=MakeupClient)
+    run_id = manager.start("makeup")
+    run = wait_for_run(database, run_id)
+
+    assert run["status"] == "completed"
+    assert run["kind"] == "makeup"
+    assert run["summary"]["success"] == 1
+    assert checkins == ["/api/container/button?id=1"]
+
+
+def test_makeup_run_without_failures_completes_empty(tmp_path: Path):
+    settings, database = make_single_task_database(tmp_path)
+    database.upsert_topics(
+        [
+            {
+                "topic_key": "t1",
+                "name": "正常",
+                "remote_status": "unknown",
+                "checkin_scheme": "/api/container/button?id=1",
+            }
+        ]
+    )
+    database.update_topic_enabled("t1", True)
+
+    class NoopClient:
+        def __init__(self, cookie: str):
+            self.called = False
+
+        def verify_login(self):
+            return LoginStatus(True, "1", "用户", "Cookie 有效")
+
+        def list_topics(self, cancel_event):
+            self.called = True
+            return [TopicSnapshot("t1", "正常", "", "available", "/api/container/button?id=1")]
+
+        def checkin(self, scheme: str):
+            raise AssertionError("makeup should not check in anything")
+
+    client = NoopClient("SUB=abc")
+    manager = TaskManager(database, settings, client_factory=lambda cookie: client)
+    run_id = manager.start("makeup")
+    run = wait_for_run(database, run_id)
+
+    assert run["status"] == "completed"
+    assert run["summary"]["selected"] == 0
+    assert client.called is True

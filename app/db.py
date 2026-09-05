@@ -473,6 +473,29 @@ class Database:
             "streak_days": streak,
         }
 
+    def get_failed_keys_between(self, start: str, end: str) -> list[str]:
+        """Union of failed topic keys recorded in completed runs within the window."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT summary_json FROM runs
+                WHERE created_at >= ? AND created_at < ?
+                  AND status = 'completed'
+                  AND kind IN ('checkin', 'scheduled', 'makeup')
+                """,
+                (start, end),
+            ).fetchall()
+        keys: list[str] = []
+        for row in rows:
+            try:
+                summary = json.loads(row["summary_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            for key in summary.get("failed_keys") or []:
+                if key not in keys:
+                    keys.append(key)
+        return keys
+
     def get_schedule(self) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
             row = conn.execute("SELECT * FROM schedule WHERE id = 1").fetchone()

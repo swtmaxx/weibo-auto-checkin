@@ -91,6 +91,7 @@ class RuntimePolicyPayload(BaseModel):
     cooldown_on_rate_limit: bool
     cooldown_hours: int = Field(default=0, ge=0, le=168)
     schedule_jitter_minutes: int = Field(default=0, ge=0, le=120)
+    auto_makeup: bool = True
 
 
 class NotificationPayload(BaseModel):

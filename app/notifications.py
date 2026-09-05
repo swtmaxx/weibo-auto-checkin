@@ -91,6 +91,8 @@ class NotificationService:
             "risk": "触发风控保护",
         }
         title = labels.get(event, "任务通知")
+        if kind == "makeup" and event == "completed":
+            title = "补签完成"
         lines = [
             f"微博超话签到 · {title}",
             f"任务：{kind} #{run_id}",

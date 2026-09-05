@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Callable
 
@@ -15,8 +15,8 @@ from .weibo import WeiboAuthError, WeiboClient, WeiboRiskError
 
 logger = logging.getLogger(__name__)
 
-TASK_KINDS = {"sync", "checkin", "scheduled", "single"}
-COOLDOWN_KINDS = {"checkin", "scheduled", "single"}
+TASK_KINDS = {"sync", "checkin", "scheduled", "single", "makeup"}
+COOLDOWN_KINDS = {"checkin", "scheduled", "single", "makeup"}
 
 
 def jittered_delay(base_seconds: float, jitter_percent: int) -> float:
@@ -25,6 +25,20 @@ def jittered_delay(base_seconds: float, jitter_percent: int) -> float:
         return base_seconds
     factor = max(0, min(100, jitter_percent)) / 100.0
     return base_seconds * random.uniform(1.0 - factor, 1.0 + factor)
+
+
+def local_day_window(timezone_name: str) -> tuple[str, str]:
+    """UTC ISO window covering today in the given timezone."""
+    try:
+        zone = ZoneInfo(timezone_name)
+    except Exception:
+        zone = ZoneInfo("UTC")
+    now = datetime.now(zone)
+    start = datetime.combine(now.date(), time.min, tzinfo=zone).astimezone(timezone.utc)
+    return (
+        start.isoformat(timespec="seconds"),
+        (start + timedelta(days=1)).isoformat(timespec="seconds"),
+    )
 
 
 class RunBusyError(RuntimeError):
@@ -187,6 +201,15 @@ class TaskManager:
                 self.db.finish_run(run_id, status, summary)
                 return
 
+            if kind == "makeup":
+                start_iso, end_iso = self._local_day_window()
+                failed_keys = set(self.db.get_failed_keys_between(start_iso, end_iso))
+                snapshots = [item for item in snapshots if item.topic_key in failed_keys]
+                if not snapshots:
+                    logger.info("今天没有需要补签的超话")
+                    self.db.finish_run(run_id, "completed", {"selected": 0})
+                    return
+
             summary = self._run_checkins(client, snapshots, cancel_event, logger, policy)
             status = "cancelled" if cancel_event.is_set() else "completed"
             self._notify(
@@ -260,6 +283,9 @@ class TaskManager:
                     self._active_run_id = None
             self._operation_lock.release()
 
+    def _local_day_window(self) -> tuple[str, str]:
+        return local_day_window(self.settings.timezone)
+
     def _make_client(self, cookie: str, policy: RuntimePolicy) -> Any:
         if self.client_factory is not None:
             return self.client_factory(cookie)
@@ -319,6 +345,7 @@ class TaskManager:
             "limited": bool(policy.max_topics_per_run and len(selected) >= policy.max_topics_per_run),
         }
         consecutive_failures = 0
+        failed_keys: list[str] = []
         for index, topic in enumerate(selected, start=1):
             if cancel_event.is_set():
                 break
@@ -333,6 +360,7 @@ class TaskManager:
             if not snapshot.checkin_scheme:
                 summary["failed"] += 1
                 consecutive_failures += 1
+                failed_keys.append(topic["topic_key"])
                 self.db.update_topic_result(
                     topic["topic_key"],
                     snapshot.remote_status,
@@ -361,6 +389,7 @@ class TaskManager:
                 else:
                     summary["failed"] += 1
                     consecutive_failures += 1
+                    failed_keys.append(topic["topic_key"])
                     self.db.update_topic_result(topic["topic_key"], "available", result.message)
                     logger.warning(f"{snapshot.name}: {result.message}")
                     if (
@@ -374,6 +403,7 @@ class TaskManager:
             except Exception as exc:
                 summary["failed"] += 1
                 consecutive_failures += 1
+                failed_keys.append(topic["topic_key"])
                 self.db.update_topic_result(topic["topic_key"], "available", str(exc))
                 logger.warning(f"{snapshot.name}: {exc}")
                 if (
@@ -386,6 +416,8 @@ class TaskManager:
                 delay = jittered_delay(policy.checkin_delay_seconds, policy.delay_jitter_percent)
                 cancel_event.wait(delay)
         summary["cancelled"] = cancel_event.is_set()
+        if failed_keys:
+            summary["failed_keys"] = failed_keys[:200]
         return summary
 
 
@@ -435,6 +467,14 @@ class Scheduler:
         self._thread: threading.Thread | None = None
         self._last_prune_date: str | None = None
         self._jitter_plan: tuple[str, str, int, datetime] | None = None
+        self._makeup_plan: tuple[str, datetime] | None = None
+
+    def _auto_makeup_enabled(self) -> bool:
+        runtime_state = getattr(self.manager, "runtime_state", None)
+        if runtime_state is None:
+            return False
+        policy, _ = runtime_state.snapshot()
+        return bool(policy.auto_makeup)
 
     @staticmethod
     def should_fire(
@@ -520,6 +560,24 @@ class Scheduler:
                     else:
                         self.db.mark_schedule_run(today)
                         self._jitter_plan = None
+                        if self._auto_makeup_enabled():
+                            delay = max(0, self.settings.makeup_delay_minutes) * 60
+                            self._makeup_plan = (today, now + timedelta(seconds=delay))
+                makeup_plan = self._makeup_plan
+                if makeup_plan:
+                    if makeup_plan[0] != today:
+                        self._makeup_plan = None
+                    elif now >= makeup_plan[1]:
+                        start_iso, end_iso = local_day_window(self.settings.timezone)
+                        if self.db.get_failed_keys_between(start_iso, end_iso):
+                            try:
+                                self.manager.start("makeup")
+                            except RunBusyError:
+                                pass
+                            else:
+                                self._makeup_plan = None
+                        else:
+                            self._makeup_plan = None
                 if (
                     self.settings.history_retention_days
                     and self._last_prune_date != today

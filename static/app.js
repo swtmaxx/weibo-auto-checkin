@@ -388,6 +388,13 @@
       failed: ["失败", "status-failed"],
       cancelled: ["已取消", "status-cancelled"]
     };
+    const kindLabels = {
+      checkin: "立即签到",
+      sync: "同步超话",
+      makeup: "自动补签",
+      single: "单超话签到",
+      scheduled: "定时签到"
+    };
     const label = labels[run.status] || [run.status, "status-idle"];
     state.className = "metric-value status-value " + label[1];
     state.textContent = label[0];
@@ -395,7 +402,7 @@
     cancel.classList.toggle("hidden", !running);
     summary.className = "task-summary";
     const title = document.createElement("strong");
-    title.textContent = (run.kind === "checkin" ? "立即签到" : "同步超话") + " · " + label[0];
+    title.textContent = (kindLabels[run.kind] || run.kind) + " · " + label[0];
     const info = document.createElement("span");
     const data = run.summary || {};
     info.textContent = running
@@ -438,7 +445,14 @@
       const date = document.createElement("td");
       date.textContent = formatDate(run.created_at);
       const kind = document.createElement("td");
-      kind.textContent = run.kind;
+      const kindLabels = {
+        checkin: "立即签到",
+        sync: "同步超话",
+        makeup: "自动补签",
+        single: "单超话签到",
+        scheduled: "定时签到"
+      };
+      kind.textContent = kindLabels[run.kind] || run.kind;
       const state = document.createElement("td");
       const stateBadge = document.createElement("span");
       const stateClass = {
@@ -617,6 +631,7 @@
     $("#notify-risk").checked = Boolean(notification.notify_risk);
     $("#listen-events").checked = Boolean(notification.listen_events);
     $("#schedule-jitter").value = policy.schedule_jitter_minutes;
+    $("#auto-makeup").checked = Boolean(policy.auto_makeup);
     renderCooldown(data.cooldown || {});
     renderNotificationState(notification);
     renderQQListenerState(data.qq_listener || {});
@@ -634,7 +649,8 @@
         read_retry_count: Number($("#read-retries").value),
         cooldown_on_rate_limit: $("#cooldown-enabled").checked,
         cooldown_hours: Number($("#cooldown-hours").value),
-        schedule_jitter_minutes: Number($("#schedule-jitter").value)
+        schedule_jitter_minutes: Number($("#schedule-jitter").value),
+        auto_makeup: $("#auto-makeup").checked
       },
       notifications: {
         enabled: $("#notifications-enabled").checked,
