@@ -15,7 +15,7 @@ from app.config import RuntimePolicy, Settings, RuntimeState
 from app.db import Database, utc_now
 from app.main import create_app
 from app.security import LoginThrottle, decrypt_cookie, encrypt_cookie
-from app.tasks import Scheduler, TaskManager, jittered_delay, local_day_window
+from app.tasks import RunBusyError, Scheduler, TaskManager, jittered_delay, local_day_window
 from app.weibo import CheckinResult, LoginStatus, TopicSnapshot, parse_cookie_expiry
 
 
@@ -94,6 +94,24 @@ def test_compute_stats_without_runs(tmp_path: Path):
     stats = database.compute_stats("Asia/Shanghai")
     assert stats["success_rate"] is None
     assert stats["streak_days"] == 0
+
+
+def test_compute_stats_streak_breaks_on_all_failed_day(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    zone = ZoneInfo("Asia/Shanghai")
+    rows = [
+        ("checkin", "completed", _local_created_at(zone, 0, 9), {"success": 1}),
+        ("checkin", "completed", _local_created_at(zone, 1, 9), {"failed": 2}),
+        ("checkin", "completed", _local_created_at(zone, 2, 9), {"already": 1}),
+    ]
+    for kind, status, created, summary in rows:
+        _insert_run(database.path, kind, status, created, summary)
+
+    stats = database.compute_stats("Asia/Shanghai")
+
+    # A day only counts toward the streak when something actually signed;
+    # the all-failed middle day must break the chain despite being completed.
+    assert stats["streak_days"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +614,17 @@ def test_get_failed_keys_between(tmp_path: Path):
     assert database.get_failed_keys_between(start, end) == ["a", "b", "c"]
 
 
+def test_get_failed_keys_between_includes_failed_runs(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    _insert_run(database.path, "checkin", "failed", utc_now(), {"failed_keys": ["t9"]})
+    _insert_run(database.path, "checkin", "cancelled", utc_now(), {"failed_keys": ["t8"]})
+
+    start, end = local_day_window("Asia/Shanghai")
+    # Aborted runs still record which topics failed before the abort; makeup
+    # should retry them. Cancelled runs stay out by design.
+    assert database.get_failed_keys_between(start, end) == ["t9"]
+
+
 def test_makeup_run_retries_only_failed_topics(tmp_path: Path):
     settings, database = make_single_task_database(tmp_path)
     database.upsert_topics(
@@ -796,3 +825,220 @@ def test_record_topic_daily_accumulates(tmp_path: Path):
             "SELECT success, failed FROM topic_daily WHERE topic_key = 't1' AND date = '2026-08-29'"
         ).fetchone()
     assert row == (1, 1)
+
+
+# ---------------------------------------------------------------------------
+# Batched check-in
+# ---------------------------------------------------------------------------
+
+
+def test_list_pending_topics_excludes_signed_today(tmp_path: Path):
+    database = Database(tmp_path / "test.sqlite3")
+    database.upsert_topics(
+        [
+            {"topic_key": "a", "name": "甲", "remote_status": "signed", "checkin_scheme": None},
+            {"topic_key": "b", "name": "乙", "remote_status": "available", "checkin_scheme": "/api/container/button?b"},
+            {"topic_key": "c", "name": "丙", "remote_status": "available", "checkin_scheme": "/api/container/button?c"},
+            {"topic_key": "d", "name": "丁", "remote_status": "available", "checkin_scheme": None},
+        ]
+    )
+    database.update_topic_enabled("a", True)
+    database.update_topic_enabled("b", True)
+    database.update_topic_enabled("c", True)
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    database.record_topic_daily("a", today, success=1)
+    database.record_topic_daily("b", today, failed=1)
+
+    pending = database.list_pending_topics("Asia/Shanghai")
+
+    # a 已成功剔除；b 今天失败仍在待签；c 从未签；d 停用剔除。
+    # 中文名按 Unicode 码点排序（丙 U+4E19 < 乙 U+4E59），与 list_topics 一致。
+    assert [topic["topic_key"] for topic in pending] == ["c", "b"]
+
+
+def test_batched_checkin_signs_first_batch_then_clears_chain(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.tasks.jittered_delay", lambda base, jitter: 0)
+    settings, database = make_single_task_database(tmp_path)
+    database.upsert_topics(
+        [
+            {
+                "topic_key": f"t{i}",
+                "name": f"超话{i}",
+                "remote_status": "unknown",
+                "checkin_scheme": f"/api/container/button?id={i}",
+            }
+            for i in range(1, 5)
+        ]
+    )
+    for i in range(1, 5):
+        database.update_topic_enabled(f"t{i}", True)
+    database.set_json_config(
+        "runtime_settings",
+        {"batch_size": 2, "batch_interval_minutes": 10},
+    )
+
+    class BatchClient:
+        def __init__(self, cookie: str):
+            pass
+
+        def verify_login(self):
+            return LoginStatus(True, "1", "用户", "Cookie 有效")
+
+        def list_topics(self, cancel_event):
+            return [
+                TopicSnapshot(
+                    f"t{i}",
+                    f"超话{i}",
+                    "",
+                    "available",
+                    f"/api/container/button?id={i}",
+                )
+                for i in range(1, 5)
+            ]
+
+        def checkin(self, scheme: str):
+            return CheckinResult("success", "签到成功", {})
+
+    manager = TaskManager(database, settings, client_factory=BatchClient)
+
+    first_id = manager.start("checkin")
+    first = wait_for_run(database, first_id)
+
+    assert first["status"] == "completed"
+    assert first["summary"]["success"] == 2
+    assert first["summary"]["pending"] == 2
+    chain = manager.get_batch_chain()
+    assert chain is not None
+    assert chain["date"] == datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
+    assert chain["next_at"]
+
+    second_id = manager.start("batch")
+    second = wait_for_run(database, second_id)
+
+    assert second["kind"] == "batch"
+    assert second["summary"]["success"] == 2
+    assert second["summary"]["pending"] == 0
+    assert manager.get_batch_chain() is None
+
+
+def test_batch_disabled_keeps_single_run_behavior(tmp_path: Path):
+    settings, database = make_single_task_database(tmp_path)
+    database.upsert_topics(
+        [
+            {
+                "topic_key": "topic-1",
+                "name": "可签到超话",
+                "remote_status": "unknown",
+                "checkin_scheme": "/api/container/button?x=1",
+            },
+            {
+                "topic_key": "topic-2",
+                "name": "已签到超话",
+                "remote_status": "unknown",
+                "checkin_scheme": None,
+            },
+        ]
+    )
+    database.update_topic_enabled("topic-1", True)
+
+    class LegacyClient:
+        def __init__(self, cookie: str):
+            pass
+
+        def verify_login(self):
+            return LoginStatus(True, "1", "用户", "Cookie 有效")
+
+        def list_topics(self, cancel_event):
+            return [
+                TopicSnapshot("topic-1", "可签到超话", "", "available", "/api/container/button?x=1"),
+                TopicSnapshot("topic-2", "已签到超话", "", "signed", None),
+            ]
+
+        def checkin(self, scheme: str):
+            return CheckinResult("success", "签到成功", {})
+
+    manager = TaskManager(database, settings, client_factory=LegacyClient)
+    run_id = manager.start("checkin")
+    run = wait_for_run(database, run_id)
+
+    assert run["status"] == "completed"
+    assert run["summary"]["success"] == 1
+    assert run["summary"]["skipped"] == 1
+    assert "pending" not in run["summary"]
+    assert manager.get_batch_chain() is None
+
+
+def test_scheduler_batch_chain_fires_when_due(tmp_path: Path):
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+    )
+    database = Database(settings.db_path)
+    database.upsert_topics(
+        [
+            {
+                "topic_key": "t1",
+                "name": "待签超话",
+                "remote_status": "available",
+                "checkin_scheme": "/api/container/button?id=1",
+            }
+        ]
+    )
+    database.update_topic_enabled("t1", True)
+
+    class ChainManager:
+        def __init__(self):
+            self.chain = None
+            self.busy = False
+            self.started: list[str] = []
+
+        def get_batch_chain(self):
+            return self.chain
+
+        def clear_batch_chain(self):
+            self.chain = None
+
+        def start(self, kind: str):
+            if self.busy:
+                raise RunBusyError("已有任务正在运行")
+            self.started.append(kind)
+
+    manager = ChainManager()
+    scheduler = Scheduler(database, settings, manager)
+    zone = ZoneInfo(settings.timezone)
+    now = datetime.now(zone)
+    today = now.date().isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
+    future = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(timespec="seconds")
+
+    # 到期且有 pending → 触发 batch，链留给 worker 收尾
+    manager.chain = {"date": today, "next_at": past}
+    scheduler._process_batch_chain(now, today)
+    assert manager.started == ["batch"]
+    assert manager.chain is not None
+
+    # 忙 → 保留链，下轮重试
+    manager.started.clear()
+    manager.busy = True
+    scheduler._process_batch_chain(now, today)
+    assert manager.started == []
+    assert manager.chain is not None
+    manager.busy = False
+
+    # 未到期 → 不触发
+    manager.chain = {"date": today, "next_at": future}
+    scheduler._process_batch_chain(now, today)
+    assert manager.started == []
+
+    # 跨天 → 清链作废
+    manager.chain = {"date": "2000-01-01", "next_at": "2000-01-01T00:00:00+00:00"}
+    scheduler._process_batch_chain(now, today)
+    assert manager.chain is None
+
+    # 到期但已无待签 → 清链
+    manager.chain = {"date": today, "next_at": past}
+    database.update_topic_enabled("t1", False)
+    scheduler._process_batch_chain(now, today)
+    assert manager.started == []
+    assert manager.chain is None

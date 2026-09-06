@@ -67,6 +67,16 @@
             <small>填 0 表示不因连续失败停止</small>
           </label>
           <label>
+            每批超话数
+            <input id="batch-size" name="batch_size" type="number" min="0" max="10000" step="1" required>
+            <small>填 0 表示不分批；启用后每次只签一批，其余按间隔自动跟进</small>
+          </label>
+          <label>
+            分批间隔（分钟）
+            <input id="batch-interval" name="batch_interval_minutes" type="number" min="10" max="720" step="1" required>
+            <small>上一批完成后等待多久自动签下一批</small>
+          </label>
+          <label>
             请求超时（秒）
             <input id="request-timeout" name="request_timeout_seconds" type="number" min="5" max="60" step="1" required>
             <small>单次微博请求的最长等待时间</small>

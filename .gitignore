@@ -11,3 +11,4 @@ data/*
 *.db
 *.sqlite
 *.sqlite3
+gui-test-screenshots/

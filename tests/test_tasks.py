@@ -235,3 +235,113 @@ def test_consecutive_failures_stop_the_run(tmp_path: Path):
     assert run["status"] == "completed"
     assert run["summary"]["failed"] == 2
     assert run["summary"]["stopped_reason"] == "连续失败达到阈值"
+
+
+def test_worker_releases_operation_lock_when_setup_fails(tmp_path: Path):
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+        checkin_delay_seconds=0,
+    )
+    database = Database(settings.db_path)
+    database.save_cookie(encrypt_cookie("SUB=abc", settings.secret_key))
+    manager = TaskManager(database, settings, client_factory=FakeClient)
+    state = manager.runtime_state
+
+    def broken_snapshot():
+        raise RuntimeError("snapshot exploded")
+
+    state.snapshot = broken_snapshot  # type: ignore[method-assign]
+    run_id = manager.start("checkin")
+    run = wait_for_run(database, run_id, timeout=5)
+
+    assert run["status"] == "failed"
+    assert "snapshot exploded" in (run["error"] or "")
+
+    # The operation lock must be released: a follow-up task starts normally.
+    # finish_run 对外可见与 finally 释放锁之间有微小窗口,轮询而非直接断言。
+    del state.snapshot
+    deadline = time.time() + 5
+    second_id = None
+    while time.time() < deadline:
+        try:
+            second_id = manager.start("checkin")
+            break
+        except RunBusyError:
+            time.sleep(0.02)
+    assert second_id is not None, "operation lock was never released"
+    second = wait_for_run(database, second_id, timeout=5)
+    assert second["status"] == "completed"
+
+
+def test_cancelled_batch_run_clears_chain(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("app.tasks.jittered_delay", lambda base, jitter: 5)
+    settings = Settings(
+        data_dir=tmp_path,
+        db_path=tmp_path / "test.sqlite3",
+        secret_key="test-secret",
+        checkin_delay_seconds=0,
+    )
+    database = Database(settings.db_path)
+    database.save_cookie(encrypt_cookie("SUB=abc", settings.secret_key))
+    database.upsert_topics(
+        [
+            {
+                "topic_key": "topic-1",
+                "name": "可签到超话",
+                "remote_status": "unknown",
+                "checkin_scheme": "/api/container/button?x=1",
+            },
+            {
+                "topic_key": "topic-2",
+                "name": "另一超话",
+                "remote_status": "unknown",
+                "checkin_scheme": "/api/container/button?x=2",
+            },
+        ]
+    )
+    database.update_topic_enabled("topic-1", True)
+    database.update_topic_enabled("topic-2", True)
+    database.set_json_config(
+        "runtime_settings",
+        {"batch_size": 2, "batch_interval_minutes": 10},
+    )
+    # 预置一条未完成的批链，模拟第二批进行中被取消
+    database.set_json_config(
+        "batch_chain",
+        {"date": "2099-01-01", "next_at": "2099-01-01T00:00:00+00:00"},
+    )
+
+    class SlowClient:
+        def __init__(self, cookie: str):
+            assert cookie == "SUB=abc"
+            self.checkins: list[str] = []
+
+        def verify_login(self):
+            return LoginStatus(True, "1", "用户", "Cookie 有效")
+
+        def list_topics(self, cancel_event):
+            return [
+                TopicSnapshot("topic-1", "可签到超话", "", "available", "/api/container/button?x=1"),
+                TopicSnapshot("topic-2", "另一超话", "", "available", "/api/container/button?x=2"),
+            ]
+
+        def checkin(self, scheme: str):
+            self.checkins.append(scheme)
+            return CheckinResult("success", "签到成功", {})
+
+    client = SlowClient("SUB=abc")
+    manager = TaskManager(database, settings, client_factory=lambda cookie: client)
+    run_id = manager.start("checkin")
+
+    deadline = time.time() + 5
+    while time.time() < deadline and not client.checkins:
+        time.sleep(0.02)
+    assert client.checkins, "first check-in never happened"
+
+    assert manager.cancel() is True
+    run = wait_for_run(database, run_id, timeout=8)
+
+    assert run["status"] == "cancelled"
+    assert manager.get_batch_chain() is None

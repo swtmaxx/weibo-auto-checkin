@@ -15,8 +15,10 @@ from .weibo import WeiboAuthError, WeiboClient, WeiboRiskError
 
 logger = logging.getLogger(__name__)
 
-TASK_KINDS = {"sync", "checkin", "scheduled", "single", "makeup"}
-COOLDOWN_KINDS = {"checkin", "scheduled", "single", "makeup"}
+TASK_KINDS = {"sync", "checkin", "scheduled", "single", "makeup", "batch"}
+COOLDOWN_KINDS = {"checkin", "scheduled", "single", "makeup", "batch"}
+BATCH_CHAIN_KEY = "batch_chain"
+BATCH_KINDS = {"checkin", "scheduled", "batch"}
 
 
 def jittered_delay(base_seconds: float, jitter_percent: int) -> float:
@@ -147,6 +149,44 @@ class TaskManager:
     def current(self) -> dict[str, Any] | None:
         return self.db.current_run()
 
+    def get_batch_chain(self) -> dict[str, Any] | None:
+        value = self.db.get_json_config(BATCH_CHAIN_KEY)
+        if not isinstance(value, dict) or not value.get("date") or not value.get("next_at"):
+            return None
+        return {"date": str(value["date"]), "next_at": str(value["next_at"])}
+
+    def clear_batch_chain(self) -> None:
+        self.db.delete_config(BATCH_CHAIN_KEY)
+
+    def _set_batch_chain(self, day: str, next_at: str) -> None:
+        self.db.set_json_config(BATCH_CHAIN_KEY, {"date": day, "next_at": next_at})
+
+    def _update_batch_chain(
+        self,
+        policy: RuntimePolicy,
+        status: str,
+        summary: dict[str, Any],
+    ) -> None:
+        """After a batched run: schedule the next batch, or end the chain.
+
+        Risk-control failures intentionally skip this so the chain pauses and
+        resumes once the cooldown lifts; other failures and cancels end it.
+        """
+        if policy.batch_size <= 0:
+            return
+        if status != "completed" or summary.get("pending", 0) <= 0:
+            self.clear_batch_chain()
+            return
+        try:
+            zone = ZoneInfo(self.settings.timezone)
+        except Exception:
+            zone = ZoneInfo("UTC")
+        now = datetime.now(timezone.utc)
+        next_at = (
+            now + timedelta(minutes=policy.batch_interval_minutes)
+        ).isoformat(timespec="seconds")
+        self._set_batch_chain(datetime.now(zone).date().isoformat(), next_at)
+
     def verify_cookie(self, cookie: str) -> Any:
         if not self._operation_lock.acquire(blocking=False):
             raise RunBusyError("已有任务正在运行")
@@ -169,8 +209,11 @@ class TaskManager:
         logger = RunLogger(self.db, run_id)
         client = None
         summary: dict[str, Any] = {}
-        policy, _ = self.runtime_state.snapshot()
+        # Safe fallbacks so the exception handlers below can never fail on an
+        # unbound name; every fallible step happens inside the try block.
+        policy = RuntimePolicy()
         try:
+            policy, _ = self.runtime_state.snapshot()
             self.db.start_run(run_id)
             account = self.db.get_account()
             if not account:
@@ -226,9 +269,12 @@ class TaskManager:
                 status=status,
                 summary=summary,
             )
-            self.db.finish_run(run_id, status, summary)
             if status == "completed":
                 self._decay_delay()
+            # Chain bookkeeping lands before finish_run so the completed run
+            # record is the last state write; no reader sees a stale chain.
+            self._update_batch_chain(policy, status, summary)
+            self.db.finish_run(run_id, status, summary)
         except WeiboRiskError as exc:
             cooldown = (
                 self._safe_set_cooldown(str(exc), logger)
@@ -268,6 +314,7 @@ class TaskManager:
             )
         except Exception as exc:
             logger.error(str(exc))
+            self.clear_batch_chain()
             self.db.finish_run(
                 run_id,
                 "cancelled" if cancel_event.is_set() else "failed",
@@ -337,13 +384,28 @@ class TaskManager:
         policy: RuntimePolicy,
     ) -> dict[str, Any]:
         remote = {snapshot.topic_key: snapshot for snapshot in snapshots}
-        selected = [
-            topic
-            for topic in self.db.list_topics()
-            if topic["enabled"] and topic["topic_key"] in remote
-        ]
-        if policy.max_topics_per_run:
-            selected = selected[: policy.max_topics_per_run]
+        pending_count = 0
+        if policy.batch_size > 0:
+            # Batched mode: only topics that have not succeeded today get in,
+            # so failures naturally retry with the next batch.
+            pending = [
+                topic
+                for topic in self.db.list_pending_topics(self.settings.timezone)
+                if topic["topic_key"] in remote
+            ]
+            limit = policy.batch_size
+            if policy.max_topics_per_run:
+                limit = min(limit, policy.max_topics_per_run)
+            selected = pending[:limit]
+            pending_count = max(0, len(pending) - len(selected))
+        else:
+            selected = [
+                topic
+                for topic in self.db.list_topics()
+                if topic["enabled"] and topic["topic_key"] in remote
+            ]
+            if policy.max_topics_per_run:
+                selected = selected[: policy.max_topics_per_run]
         summary = {
             "discovered": len(snapshots),
             "selected": len(selected),
@@ -353,6 +415,8 @@ class TaskManager:
             "skipped": max(0, len(snapshots) - len(selected)),
             "limited": bool(policy.max_topics_per_run and len(selected) >= policy.max_topics_per_run),
         }
+        if policy.batch_size > 0:
+            summary["pending"] = pending_count
         consecutive_failures = 0
         failed_keys: list[str] = []
         try:
@@ -541,6 +605,40 @@ class Scheduler:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
 
+    def _process_batch_chain(self, now: datetime, today: str) -> None:
+        """Fire the next batched check-in when the chain is due.
+
+        A busy manager keeps the chain so the poll retries; risk cooldown also
+        surfaces as RunBusyError from start(), which pauses the chain until the
+        cooldown lifts. A stale or cross-day chain is discarded.
+        """
+        get_chain = getattr(self.manager, "get_batch_chain", None)
+        clear_chain = getattr(self.manager, "clear_batch_chain", None)
+        if not callable(get_chain) or not callable(clear_chain):
+            return
+        chain = get_chain()
+        if not chain:
+            return
+        if chain["date"] != today:
+            clear_chain()
+            return
+        try:
+            next_at = datetime.fromisoformat(chain["next_at"])
+        except ValueError:
+            clear_chain()
+            return
+        if next_at.tzinfo is None:
+            next_at = next_at.replace(tzinfo=timezone.utc)
+        if now < next_at:
+            return
+        if not self.db.list_pending_topics(self.settings.timezone):
+            clear_chain()
+            return
+        try:
+            self.manager.start("batch")
+        except RunBusyError:
+            pass
+
     def _loop(self) -> None:
         try:
             zone = ZoneInfo(self.settings.timezone)
@@ -602,6 +700,7 @@ class Scheduler:
                                 self._makeup_plan = None
                         else:
                             self._makeup_plan = None
+                self._process_batch_chain(now, today)
                 if (
                     self.settings.history_retention_days
                     and self._last_prune_date != today

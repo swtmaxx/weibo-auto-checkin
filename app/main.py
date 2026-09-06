@@ -92,6 +92,8 @@ class RuntimePolicyPayload(BaseModel):
     cooldown_hours: int = Field(default=0, ge=0, le=168)
     schedule_jitter_minutes: int = Field(default=0, ge=0, le=120)
     auto_makeup: bool = True
+    batch_size: int = Field(default=0, ge=0, le=10000)
+    batch_interval_minutes: int = Field(default=60, ge=10, le=720)
 
 
 class NotificationPayload(BaseModel):
@@ -212,6 +214,22 @@ def create_app(
         https_only=app_settings.cookie_secure,
         session_cookie="weibo_session",
     )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        # Templates reference only local assets and no inline script/style,
+        # so the CSP can stay strict.
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "script-src 'self'; connect-src 'self'; frame-ancestors 'none'; "
+            "base-uri 'none'; form-action 'self'",
+        )
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
     app.state.settings = app_settings
     app.state.db = app_db
     app.state.task_manager = task_manager
@@ -644,6 +662,3 @@ def _decrypt_account_cookie(db: Database, settings: Settings) -> str:
 
 async def _run_sync(function: Any, *args: Any) -> Any:
     return await asyncio.to_thread(function, *args)
-
-
-app = create_app()

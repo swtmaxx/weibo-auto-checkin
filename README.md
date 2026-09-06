@@ -30,6 +30,7 @@
 **任务与调度**
 
 - 手动签到、取消任务、任务日志和历史记录
+- 分批签到：启用后每次只签一批待签超话，其余按设定间隔自动跟进，拉长全天请求分布（默认关闭）
 - 失败自动补签：每日计划跑完后自动重试当天失败的超话（每超话每天一轮，可关闭）
 - 自适应降速：触发风控后自动放大签到间隔，随平稳运行逐步恢复；账号健康分可视化
 - 签到热力图：近 12 周每日签到热力墙，支持下钻单个超话
@@ -86,10 +87,13 @@ python3 -m venv .venv
 python -m pip install -e .
 
 export APP_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn --factory app.main:create_app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开 `http://服务器地址:8000`，第一次访问会要求创建管理员密码。
+浏览器打开 `http://127.0.0.1:8000`（远程服务器可先建立 SSH 隧道 `ssh -L 8000:127.0.0.1:8000 <server>`），第一次访问会要求创建管理员密码。
+
+> [!WARNING]
+> 默认只监听 `127.0.0.1`。确需从局域网访问时设置 `APP_HOST=0.0.0.0`（或 `--host 0.0.0.0`），并务必置于反向代理后启用 HTTPS，同时设置 `APP_COOKIE_SECURE=true`。
 
 ## 📖 使用流程
 
@@ -113,7 +117,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `APP_SECRET_KEY` | 自动生成 | Cookie 加密密钥，生产环境必须固定 |
 | `APP_DATA_DIR` | `./data` | SQLite 和自动生成密钥的位置 |
 | `APP_DB_PATH` | `data/weibo-checkin.sqlite3` | SQLite 文件路径 |
-| `APP_HOST` | `0.0.0.0` | 监听地址 |
+| `APP_HOST` | `127.0.0.1` | 监听地址，默认仅本机；改为 `0.0.0.0` 需自行承担暴露风险 |
 | `APP_PORT` | `8000` | 监听端口 |
 | `APP_COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
 | `APP_TIMEZONE` | `Asia/Shanghai` | 调度使用的时区 |
@@ -130,9 +134,14 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `APP_SCHEDULE_JITTER_MINUTES` | `0` | 每日计划到点后随机等待 0~N 分钟再执行，`0` 表示准点（WebUI 保存的值优先） |
 | `APP_AUTO_MAKEUP` | `true` | 是否启用失败自动补签（WebUI 保存的值优先） |
 | `APP_MAKEUP_DELAY_MINUTES` | `180` | 每日计划跑完后，延迟多少分钟执行补签 |
+| `APP_BATCH_SIZE` | `0` | 每批超话数量，`0` 表示不分批（WebUI 保存的值优先） |
+| `APP_BATCH_INTERVAL_MINUTES` | `60` | 分批间隔：上一批完成后等待多少分钟自动签下一批（WebUI 保存的值优先） |
 
 > [!NOTE]
 > WebUI 保存的运行配置位于 SQLite 中，并优先于环境变量。恢复默认会重新使用当前环境变量提供的默认值，同时清除 QQ 通知凭证。QQ ClientSecret 以 `APP_SECRET_KEY` 加密保存，接口不会回显密钥；页面中留空表示保留原值。
+
+> [!NOTE]
+> 分批签到说明：启用「每批超话数」后，每日计划和「立即签到」都只处理当天尚未成功的前 N 个超话，完成后调度器按「分批间隔」自动签下一批，直到全部签完；当天失败的超话会进入后续批次自动重试；在任务执行页点「取消」会终止整条批链；触发风控冷却时批次自动暂停，冷却结束后继续。
 
 > [!NOTE]
 > QQ Gateway 监听需要服务器能够访问 `api.bot.qq.com`，并且机器人在 QQ 开放平台开启 C2C/PUBLIC_MESSAGES 事件权限。监听器使用官方 Gateway WebSocket，断线时会尝试恢复会话；服务只保存事件中的 `author.user_openid` 及发现时间，不保存私聊内容。

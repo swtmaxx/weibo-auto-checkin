@@ -265,8 +265,16 @@ class WeiboClient:
                 break
             since_id = next_since
             if self.retry_delay:
-                time.sleep(min(self.retry_delay, 0.5))
+                self._wait(min(self.retry_delay, 0.5), cancel_event)
         return topics
+
+    @staticmethod
+    def _wait(seconds: float, cancel_event: Any | None) -> None:
+        """Sleep that wakes up immediately when a cancel is requested."""
+        if cancel_event is not None:
+            cancel_event.wait(seconds)
+        else:
+            time.sleep(seconds)
 
     @staticmethod
     def _parse_topic(item: Any) -> TopicSnapshot | None:

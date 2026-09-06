@@ -42,6 +42,15 @@
     label.textContent = elapsed < 5 ? "刚刚更新" : elapsed < 60 ? elapsed + " 秒前更新" : Math.floor(elapsed / 60) + " 分钟前更新";
   }
 
+  function errorMessage(data) {
+    const detail = data && data.detail;
+    if (typeof detail === "string" && detail) return detail;
+    if (Array.isArray(detail) && detail.length && detail[0] && typeof detail[0].msg === "string") {
+      return detail[0].msg;
+    }
+    return "请求失败";
+  }
+
   async function readResponse(response) {
     let data = {};
     try {
@@ -50,8 +59,13 @@
       data = {};
     }
     if (!response.ok) {
-      if (response.status === 401) window.location.href = "/";
-      throw new Error(data.detail || "请求失败");
+      // Only a lost admin session (require_auth) may redirect. Business 401s
+      // such as a wrong password or an invalid Weibo cookie must surface as
+      // errors on the current page instead of silently reloading it.
+      if (response.status === 401 && data.detail === "请先登录") {
+        window.location.href = "/";
+      }
+      throw new Error(errorMessage(data));
     }
     return data;
   }
@@ -81,6 +95,12 @@
   function bindAuthForms() {
     const setupForm = $("#setup-form");
     if (setupForm) {
+      const setupError = $("#setup-error");
+      for (const field of [$("#setup-password"), $("#setup-confirm")]) {
+        field.addEventListener("input", () => {
+          setupError.textContent = "";
+        });
+      }
       setupForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const password = $("#setup-password").value;
@@ -106,6 +126,10 @@
 
     const loginForm = $("#login-form");
     if (loginForm) {
+      const loginError = $("#login-error");
+      $("#login-password").addEventListener("input", () => {
+        loginError.textContent = "";
+      });
       loginForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         const error = $("#login-error");
@@ -451,7 +475,8 @@
       sync: "同步超话",
       makeup: "自动补签",
       single: "单超话签到",
-      scheduled: "定时签到"
+      scheduled: "定时签到",
+      batch: "分批签到"
     };
     const label = labels[run.status] || [run.status, "status-idle"];
     state.className = "metric-value status-value " + label[1];
@@ -508,7 +533,8 @@
         sync: "同步超话",
         makeup: "自动补签",
         single: "单超话签到",
-        scheduled: "定时签到"
+        scheduled: "定时签到",
+        batch: "分批签到"
       };
       kind.textContent = kindLabels[run.kind] || run.kind;
       const state = document.createElement("td");
@@ -678,6 +704,8 @@
     $("#read-retries").value = policy.read_retry_count;
     $("#cooldown-hours").value = policy.cooldown_hours;
     $("#cooldown-enabled").checked = Boolean(policy.cooldown_on_rate_limit);
+    $("#batch-size").value = policy.batch_size;
+    $("#batch-interval").value = policy.batch_interval_minutes;
     $("#notifications-enabled").checked = Boolean(notification.enabled);
     $("#qq-app-id").value = notification.app_id || "";
     $("#qq-user-openid").value = notification.user_openid || "";
@@ -708,7 +736,9 @@
         cooldown_on_rate_limit: $("#cooldown-enabled").checked,
         cooldown_hours: Number($("#cooldown-hours").value),
         schedule_jitter_minutes: Number($("#schedule-jitter").value),
-        auto_makeup: $("#auto-makeup").checked
+        auto_makeup: $("#auto-makeup").checked,
+        batch_size: Number($("#batch-size").value),
+        batch_interval_minutes: Number($("#batch-interval").value)
       },
       notifications: {
         enabled: $("#notifications-enabled").checked,
@@ -868,7 +898,7 @@
       if (!file) return;
       try {
         const parsed = JSON.parse(await file.text());
-        if (!window.confirm("导入将覆盖现有的运行设置、每日计划和超话启用状态，继续？")) return;
+        if (!window.confirm("导入将覆盖现有的运行设置和每日计划，并合并配置文件中的超话（仅启用其中列出的超话，不会停用现有已启用超话），继续？")) return;
         const data = await request("/api/config/import", {
           method: "POST",
           body: parsed

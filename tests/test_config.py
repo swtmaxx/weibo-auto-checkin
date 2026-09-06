@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.config import RuntimePolicy, RuntimeState, Settings
 from app.db import Database
 from app.security import decrypt_secret
@@ -86,3 +88,33 @@ def test_set_cooldown_survives_invalid_timezone(tmp_path: Path):
     assert status["until"]  # UTC fallback still produces a deadline
     state.clear_cooldown()
     assert state.cooldown_status()["active"] is False
+
+
+def test_settings_default_host_is_loopback(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("APP_HOST", raising=False)
+    settings = Settings.from_env(base_dir=tmp_path)
+    assert settings.host == "127.0.0.1"
+
+
+def test_runtime_policy_batch_fields_validation():
+    assert RuntimePolicy().batch_size == 0
+    assert RuntimePolicy().batch_interval_minutes == 60
+    with pytest.raises(ValueError):
+        RuntimePolicy(batch_size=10001).validate()
+    with pytest.raises(ValueError):
+        RuntimePolicy(batch_size=-1).validate()
+    with pytest.raises(ValueError):
+        RuntimePolicy(batch_interval_minutes=9).validate()
+    with pytest.raises(ValueError):
+        RuntimePolicy(batch_interval_minutes=721).validate()
+
+    fallback = RuntimePolicy()
+    updated = RuntimePolicy.from_mapping(
+        {"batch_size": 25, "batch_interval_minutes": 90}, fallback=fallback
+    )
+    assert updated.batch_size == 25
+    assert updated.batch_interval_minutes == 90
+    # 旧备份没有 batch 字段时应回退到默认值
+    legacy = RuntimePolicy.from_mapping({}, fallback=fallback)
+    assert legacy.batch_size == 0
+    assert legacy.batch_interval_minutes == 60

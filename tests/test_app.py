@@ -92,6 +92,17 @@ def test_protected_endpoint_requires_login(tmp_path: Path):
         assert response.status_code == 401
 
 
+def test_security_headers_applied(tmp_path: Path):
+    client = make_client(tmp_path)
+    with client:
+        response = client.get("/healthz")
+        assert response.status_code == 200
+        assert response.headers["X-Content-Type-Options"] == "nosniff"
+        assert response.headers["X-Frame-Options"] == "DENY"
+        assert response.headers["Referrer-Policy"] == "no-referrer"
+        assert "default-src 'self'" in response.headers["Content-Security-Policy"]
+
+
 def test_change_password_requires_current_password_and_reauthenticates(tmp_path: Path):
     client = make_client(tmp_path)
     with client:

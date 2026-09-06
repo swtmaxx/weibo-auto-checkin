@@ -289,7 +289,13 @@ class QQEventListener:
     async def _heartbeat(self, websocket: Any, interval: float) -> None:
         while True:
             await asyncio.sleep(interval)
-            await websocket.send(json.dumps({"op": 1, "d": self._sequence}))
+            try:
+                await websocket.send(json.dumps({"op": 1, "d": self._sequence}))
+            except Exception as exc:
+                # Stop quietly and let the reconnect loop rebuild the session;
+                # the exception must not surface as "never retrieved" noise.
+                logger.info("QQ Gateway 心跳发送失败，等待连接重建: %s", str(exc)[:200])
+                return
 
     def _record_openid(self, data: dict[str, Any]) -> bool:
         author = data.get("author") if isinstance(data.get("author"), dict) else {}

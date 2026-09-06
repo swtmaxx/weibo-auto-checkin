@@ -187,6 +187,69 @@ def test_client_sends_frozen_cookie_header():
         assert request.headers["X-XSRF-TOKEN"] == "tok123"
 
 
+def test_list_topics_stops_promptly_when_cancelled_between_pages():
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.params.get("since_id"):
+            return httpx.Response(
+                200,
+                json={"ok": 1, "data": {"cards": [], "cardlistInfo": {}}},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "ok": 1,
+                "data": {
+                    "cards": [
+                        {
+                            "card_group": [
+                                {"oid": "t1", "title_sub": "超话一", "buttons": []}
+                            ]
+                        }
+                    ],
+                    "cardlistInfo": {"since_id": "next"},
+                },
+            },
+            request=request,
+        )
+
+    class CancelDuringWait:
+        """Fake event whose is_set() flips inside the inter-page wait."""
+
+        def __init__(self):
+            self.waited = 0.0
+            self._cancelled = False
+
+        def is_set(self):
+            return self._cancelled
+
+        def set(self):
+            self._cancelled = True
+
+        def wait(self, timeout=None):
+            self.waited += timeout or 0.0
+            self._cancelled = True
+            return True
+
+    client = WeiboClient(
+        "SUB=abc",
+        transport=httpx.MockTransport(handler),
+        retry_delay=0.5,
+    )
+    try:
+        cancel_event = CancelDuringWait()
+        topics = client.list_topics(cancel_event)
+    finally:
+        client.close()
+
+    assert [topic.topic_key for topic in topics] == ["t1"]
+    assert len(calls) == 1  # the second page is never fetched
+    assert cancel_event.waited > 0  # the page gap used the cancel-aware wait
+
+
 def test_checkin_retries_once_with_fresh_st_on_verify_error():
     calls: list[httpx.Request] = []
 

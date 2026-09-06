@@ -33,7 +33,7 @@ class Settings:
     data_dir: Path
     db_path: Path
     secret_key: str
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
     cookie_secure: bool = False
     timezone: str = "Asia/Shanghai"
@@ -77,7 +77,7 @@ class Settings:
             data_dir=data_dir,
             db_path=db_path,
             secret_key=secret_key,
-            host=os.getenv("APP_HOST", "0.0.0.0"),
+            host=os.getenv("APP_HOST", "127.0.0.1"),
             port=int(os.getenv("APP_PORT", "8000")),
             cookie_secure=_env_bool("APP_COOKIE_SECURE", False),
             timezone=os.getenv("APP_TIMEZONE", "Asia/Shanghai"),
@@ -101,6 +101,8 @@ class RuntimePolicy:
     cooldown_hours: int = 0
     schedule_jitter_minutes: int = 0
     auto_makeup: bool = True
+    batch_size: int = 0
+    batch_interval_minutes: int = 60
 
     @classmethod
     def defaults(cls, settings: Settings) -> "RuntimePolicy":
@@ -120,6 +122,10 @@ class RuntimePolicy:
                 0, min(120, int(os.getenv("APP_SCHEDULE_JITTER_MINUTES", "0")))
             ),
             auto_makeup=_env_bool("APP_AUTO_MAKEUP", True),
+            batch_size=max(0, min(10000, int(os.getenv("APP_BATCH_SIZE", "0")))),
+            batch_interval_minutes=max(
+                10, min(720, int(os.getenv("APP_BATCH_INTERVAL_MINUTES", "60")))
+            ),
         )
 
     @classmethod
@@ -154,6 +160,10 @@ class RuntimePolicy:
                 "schedule_jitter_minutes", fallback.schedule_jitter_minutes
             ),
             "auto_makeup": mapping.get("auto_makeup", fallback.auto_makeup),
+            "batch_size": mapping.get("batch_size", fallback.batch_size),
+            "batch_interval_minutes": mapping.get(
+                "batch_interval_minutes", fallback.batch_interval_minutes
+            ),
         }
         try:
             policy = cls(
@@ -167,6 +177,8 @@ class RuntimePolicy:
                 cooldown_hours=int(values["cooldown_hours"]),
                 schedule_jitter_minutes=int(values["schedule_jitter_minutes"]),
                 auto_makeup=bool(values["auto_makeup"]),
+                batch_size=int(values["batch_size"]),
+                batch_interval_minutes=int(values["batch_interval_minutes"]),
             )
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("运行配置格式错误") from exc
@@ -190,6 +202,10 @@ class RuntimePolicy:
             raise ValueError("冷却时长必须在 0-168 小时之间")
         if self.schedule_jitter_minutes < 0 or self.schedule_jitter_minutes > 120:
             raise ValueError("计划随机延迟必须在 0-120 分钟之间")
+        if self.batch_size < 0 or self.batch_size > 10000:
+            raise ValueError("每批超话数量必须在 0-10000 之间")
+        if self.batch_interval_minutes < 10 or self.batch_interval_minutes > 720:
+            raise ValueError("分批间隔必须在 10-720 分钟之间")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

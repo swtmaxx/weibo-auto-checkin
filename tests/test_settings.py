@@ -156,3 +156,25 @@ def test_qq_discovery_endpoint_starts_listener_without_full_settings_payload(tmp
         stored = database.get_json_config("notification_settings")
         assert stored is not None
         assert decrypt_secret(stored["client_secret_ciphertext"], "test-secret") == "discovery-secret"
+
+
+def test_settings_roundtrip_batch_fields(tmp_path: Path):
+    client = make_client(tmp_path)
+    with client:
+        csrf = login(client)
+        payload = client.get("/api/settings").json()
+        payload["runtime"]["batch_size"] = 25
+        payload["runtime"]["batch_interval_minutes"] = 90
+        saved = client.put("/api/settings", headers={"X-CSRF-Token": csrf}, json=payload)
+        assert saved.status_code == 200
+        assert saved.json()["runtime"]["batch_size"] == 25
+        assert saved.json()["runtime"]["batch_interval_minutes"] == 90
+
+        reloaded = client.get("/api/settings").json()
+        assert reloaded["runtime"]["batch_size"] == 25
+        assert reloaded["runtime"]["batch_interval_minutes"] == 90
+
+        # 越界值被拒绝
+        payload["runtime"]["batch_size"] = 10001
+        rejected = client.put("/api/settings", headers={"X-CSRF-Token": csrf}, json=payload)
+        assert rejected.status_code == 422

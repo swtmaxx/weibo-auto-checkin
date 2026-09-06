@@ -33,8 +33,19 @@ class LoginThrottle:
         self._lock = threading.Lock()
         self._failures: dict[str, tuple[int, float]] = {}
 
+    def _purge_expired(self) -> None:
+        now = self._clock()
+        expired = [
+            key
+            for key, (_, last_seen) in self._failures.items()
+            if now - last_seen > self._window
+        ]
+        for key in expired:
+            del self._failures[key]
+
     def delay_for(self, key: str) -> float:
         with self._lock:
+            self._purge_expired()
             record = self._failures.get(key)
             if not record:
                 return 0.0
@@ -45,6 +56,7 @@ class LoginThrottle:
 
     def record_failure(self, key: str) -> None:
         with self._lock:
+            self._purge_expired()
             count, _ = self._failures.get(key, (0, 0.0))
             self._failures[key] = (count + 1, self._clock())
 

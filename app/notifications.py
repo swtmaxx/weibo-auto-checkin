@@ -93,6 +93,8 @@ class NotificationService:
         title = labels.get(event, "任务通知")
         if kind == "makeup" and event == "completed":
             title = "补签完成"
+        elif kind == "batch" and event == "completed":
+            title = "分批签到完成"
         lines = [
             f"微博超话签到 · {title}",
             f"任务：{kind} #{run_id}",

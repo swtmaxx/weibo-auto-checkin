@@ -462,7 +462,14 @@ class Database:
                 )
             except ValueError:
                 continue
-            run_days.add(local_day.isoformat())
+            # A day counts toward the streak only when at least one topic
+            # actually signed (success or already); all-failed runs break it.
+            if (
+                max(0, int(summary.get("success") or 0))
+                + max(0, int(summary.get("already") or 0))
+                > 0
+            ):
+                run_days.add(local_day.isoformat())
         attempted = totals["success"] + totals["already"] + totals["failed"]
         streak = 0
         day = datetime.now(zone).date()
@@ -482,13 +489,17 @@ class Database:
         }
 
     def get_failed_keys_between(self, start: str, end: str) -> list[str]:
-        """Union of failed topic keys recorded in completed runs within the window."""
+        """Union of failed topic keys recorded in finished runs within the window.
+
+        Includes runs that ended 'failed' overall: their summaries still carry
+        the topics that failed before the abort, and makeup should retry them.
+        """
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT summary_json FROM runs
                 WHERE created_at >= ? AND created_at < ?
-                  AND status = 'completed'
+                  AND status IN ('completed', 'failed')
                   AND kind IN ('checkin', 'scheduled', 'makeup')
                 """,
                 (start, end),
@@ -646,6 +657,34 @@ class Database:
                 }
             )
         return {"days": days, "topic_key": topic_key, "cells": cells}
+
+    def list_pending_topics(self, timezone_name: str) -> list[dict[str, Any]]:
+        """Enabled topics without a successful check-in today, in stable order.
+
+        Topics that failed today stay pending so batched runs naturally retry
+        them; "already signed" counts as success and drops off the list.
+        """
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = timezone.utc
+        today = datetime.now(zone).date().isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT topic_key, name, description, enabled, remote_status,
+                       checkin_scheme, first_seen_at, last_seen_at, last_result
+                FROM topics
+                WHERE enabled = 1
+                  AND topic_key NOT IN (
+                      SELECT topic_key FROM topic_daily
+                      WHERE date = ? AND success > 0
+                  )
+                ORDER BY name COLLATE NOCASE, topic_key
+                """,
+                (today,),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def get_schedule(self) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
