@@ -73,7 +73,7 @@ weibo-checkin-web/
 ├── static/       前端脚本与样式
 ├── templates/    页面模板（工作台 / 登录 / 设置 / 初始化）
 ├── tests/        pytest 测试，全部使用 mock transport
-└── deploy/       systemd 服务单元
+└── deploy/       systemd 服务单元（Linux）与 Windows 启动脚本
 ```
 
 ## 🚀 快速开始
@@ -178,6 +178,26 @@ sudo systemctl status weibo-checkin
 部署时建议通过 `/etc/weibo-checkin.env` 设置 `APP_SECRET_KEY`，并限制该文件权限为 `0600`。
 
 </details>
+
+## 🪟 Windows 部署
+
+需要 Python 3.11+（安装时勾选 **Add python.exe to PATH**）。
+
+**启动**：双击 `deploy\windows\start.bat` 即可——首次运行会自动创建虚拟环境并安装依赖，之后直接启动服务并显示访问地址（默认 `http://127.0.0.1:8000`）。`APP_SECRET_KEY` 未设置时会自动生成并保存在 `data\.secret_key`，请记得备份 `data` 目录。
+
+**开机自启**：在 PowerShell 中执行一次（当前用户登录时自动启动）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\windows\install-autostart.ps1
+```
+
+取消自启：`schtasks /delete /tn "WeiboCheckin" /f`。
+
+**说明**：
+
+- 修改监听地址/端口：启动前设置 `APP_HOST` / `APP_PORT` 环境变量（默认 `127.0.0.1:8000`，仅本机可访问）
+- `APP_COOKIE_SECURE=true` 仅在通过反向代理启用 HTTPS 时设置
+- 停止服务：在服务窗口按 `Ctrl+C` 或直接关闭窗口；计划任务方式可在任务计划程序中停止
 
 ## 🧪 测试
 
